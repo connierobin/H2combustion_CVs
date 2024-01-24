@@ -191,6 +191,44 @@ if __name__ == "__main__":
         ytitle = rxn_dict[rxn_num]['ytitle']
         visualize_irc_energy(irc,title,xtitle,ytitle)
 
+    elif task == 'cvs':
+        # CVs task (Collective Variables) is the same as the plot_cn task, except that Collective Variables
+        # are calculated & plotted
+        
+        # parse command-line arguments
+        parsed = parse_plot_cn(args)
+        if parsed.rxn is not None and len(parsed.rxn) not in [2, 3]:
+            raise ValueError(f"Expect rxn number to have length 2 or 3! Given rxn_num={parsed.rxn}")
+
+        # prepare IRC data
+        # TODO: add more functions that calculate this same info but on different CN/CV axes
+        irc, rxn_num = main_plotting_namedtuple(parsed.path_npz_irc, parsed.rxn)
+
+        # prepare AIMD & Normal Mode Displacement data, if given
+        # it is important to check loaded reaction number, because if parsed.rxn is None and each
+        # npz file contains only one reaction, it is important to know that it is the same rxn
+        aimd, disp = None, None
+        if parsed.path_npz_aimd is not None:
+            aimd, aimd_rxn_num = main_plotting_namedtuple(parsed.path_npz_aimd, parsed.rxn)
+            assert aimd_rxn_num == rxn_num
+        if parsed.path_npz_disp is not None:
+            disp, disp_rxn_num = main_plotting_namedtuple(parsed.path_npz_disp, parsed.rxn)
+            assert disp_rxn_num == rxn_num
+
+        # make directory for storing plots
+        directory = f'plot_cn_{rxn_num}'
+        if not os.path.isdir(directory):
+            os.mkdir(directory)
+
+        # plot data
+        title = rxn_dict[rxn_num]['title']
+        xtitle = rxn_dict[rxn_num]['xtitle']
+        ytitle = rxn_dict[rxn_num]['ytitle']
+
+        # TODO: create a new visualizer function that plots the CVs somehow. 
+        # Each input here (irc, aimd, disp) contains a tuple that represents a CN (Coordination Number)
+        visualize_cn(irc, aimd, disp, directory, title, xtitle, ytitle)
+
 
     else:
         raise ValueError(f"Task={task} is not recognized! Options: irc_npz, plot_cn")

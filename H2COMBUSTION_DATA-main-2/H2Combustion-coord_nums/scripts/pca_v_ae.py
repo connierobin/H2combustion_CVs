@@ -186,16 +186,18 @@ def plot_arrows(ax, mean, vectors, color, label):
     u = []
     v = []
     w = []
+    x = []
+    y = []
+    z = []
 
     for vec in vectors:
         u.append(vec[0])
         v.append(vec[1])
         w.append(vec[2])
+        x.append(mean[0] - vec[0]/2)
+        y.append(mean[1] - vec[1]/2)
+        z.append(mean[2] - vec[2]/2)
     
-    num_arrows = len(vectors)
-    x, y, z = np.meshgrid(mean[0],
-                          mean[1],
-                          mean[2])
     ax.quiver(x, y, z, u, v, w, color=color, label=label)
 
 if __name__ == "__main__":

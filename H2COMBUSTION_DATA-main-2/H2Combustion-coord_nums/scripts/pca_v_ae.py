@@ -1,7 +1,9 @@
 import sys
 
+from matplotlib import pyplot as plt
 import numpy as np
 import ase
+from sklearn.decomposition import PCA
 
 from combust.utils.utility import check_data_consistency
 from combust.utils.utility import get_data_remove_appended_zero
@@ -49,37 +51,37 @@ def load_data(path_npz):
         #     'F': forces, array of (n_snapshots, n_atoms, 3)
 
 
-    # coords: ndarray, shape=(M, N, 3)
-    #     The 3D array of atomic coordinates for M data points and N atoms.
-    R_data = data['R']
-    print(f"R shape: {R_data.shape}")
-    print(R_data[0])
+    # # coords: ndarray, shape=(M, N, 3)
+    # #     The 3D array of atomic coordinates for M data points and N atoms.
+    # R_data = data['R']
+    # print(f"R shape: {R_data.shape}")
+    # print(R_data[0])
 
-    #     nums : ndarray, shape=(M, N)
-    #     The 2D array of atomic numbers for M data points and N atoms
-    Z_data = data['Z']
-    print(f"Z shape: {Z_data.shape}")
-    print(Z_data[0])
+    # #     nums : ndarray, shape=(M, N)
+    # #     The 2D array of atomic numbers for M data points and N atoms
+    # Z_data = data['Z']
+    # print(f"Z shape: {Z_data.shape}")
+    # print(Z_data[0])
     
-    # nmber of atoms??
-    N_data = data['N']
-    print(f"N shape: {N_data.shape}")
-    print(N_data[0])
+    # # nmber of atoms??
+    # N_data = data['N']
+    # print(f"N shape: {N_data.shape}")
+    # print(N_data[0])
 
-    # energy
-    E_data = data['E']
-    print(f"E shape: {E_data.shape}")
-    print(E_data[0])
+    # # energy
+    # E_data = data['E']
+    # print(f"E shape: {E_data.shape}")
+    # print(E_data[0])
 
-    # force
-    F_data = data['F']
-    print(f"F shape: {F_data.shape}")
-    print(F_data[0])
+    # # force
+    # F_data = data['F']
+    # print(f"F shape: {F_data.shape}")
+    # print(F_data[0])
 
-    # reaction numbers??
-    RXN_data = data['RXN']
-    print(f"RXN shape: {RXN_data.shape}")
-    print(RXN_data[0])
+    # # reaction numbers??
+    # RXN_data = data['RXN']
+    # print(f"RXN shape: {RXN_data.shape}")
+    # print(RXN_data[0])
 
 
     # NOTE: it appears that the "coordination numbers" used as an axis here are the typical
@@ -179,6 +181,23 @@ def convert_to_invariant_dists(data):
 
     return np.array(inv_data)
 
+# Function to plot arrows
+def plot_arrows(ax, mean, vectors, color, label):
+    u = []
+    v = []
+    w = []
+
+    for vec in vectors:
+        u.append(vec[0])
+        v.append(vec[1])
+        w.append(vec[2])
+    
+    num_arrows = len(vectors)
+    x, y, z = np.meshgrid(mean[0],
+                          mean[1],
+                          mean[2])
+    ax.quiver(x, y, z, u, v, w, color=color, label=label)
+
 if __name__ == "__main__":
     # args = sys.argv[1:]
     # task = args.pop(0)
@@ -190,3 +209,34 @@ if __name__ == "__main__":
     
     # example_data = {'R': np.array([[[2,1,0], [1,1,0], [1,2,0]]])}
     # example = convert_to_invariant_dists(example_data)
+
+    # split the array into (possibly not exactly equal) portions
+    partitioned_data = np.array_split(inv_data, 100)
+
+    # choose one set of 100 data points to test on that isn't just the first one
+    test_data = partitioned_data[3]
+
+    # set up PCA
+    pca = PCA(n_components=2)
+    pca_result = pca.fit_transform(test_data)
+    # means=pca.mean_[:1]
+    means=pca.mean_
+    # comps=pca.components_[:,:1]
+    comps=pca.components_
+    print(means)
+    print(pca.mean_)
+    print(comps)
+    print(pca.components_)
+
+    # Plotting
+    fig = plt.figure()
+    ax = fig.add_subplot(projection='3d')
+    xs = test_data[:,0]
+    ys = test_data[:,1]
+    zs = test_data[:,2]
+    ax.scatter(xs, ys, zs)
+
+    # Plot PCA arrows
+    plot_arrows(ax, means, comps, 'red', 'PCA Components')
+
+    plt.show()

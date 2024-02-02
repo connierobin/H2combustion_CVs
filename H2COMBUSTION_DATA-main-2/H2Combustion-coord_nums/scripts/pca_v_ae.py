@@ -4,10 +4,13 @@ from matplotlib import pyplot as plt
 import numpy as np
 import ase
 from sklearn.decomposition import PCA
+from tensorflow.keras.layers import Input, Dense
+from tensorflow.keras.models import Model
 
 from combust.utils.utility import check_data_consistency
 from combust.utils.utility import get_data_remove_appended_zero
 
+atom_with_number = ['N/A', 'H', 'He', 'Li', 'Be', 'B', 'C', 'N', 'O', 'F']
 
 def load_data(path_npz):
     """Return the data from path_npz.
@@ -39,8 +42,6 @@ def load_data(path_npz):
     # only use the first reaction if there are multiple
     rxn_num = f"rxn{rxn_nums[0]}"
 
-    print(data.keys())
-
     # from parse():
         #     Returns
         # -------
@@ -57,8 +58,8 @@ def load_data(path_npz):
     # print(f"R shape: {R_data.shape}")
     # print(R_data[0])
 
-    # #     nums : ndarray, shape=(M, N)
-    # #     The 2D array of atomic numbers for M data points and N atoms
+    #     nums : ndarray, shape=(M, N)
+    #     The 2D array of atomic numbers for M data points and N atoms
     # Z_data = data['Z']
     # print(f"Z shape: {Z_data.shape}")
     # print(Z_data[0])
@@ -181,6 +182,54 @@ def convert_to_invariant_dists(data):
 
     return np.array(inv_data)
 
+def run_pca(data):
+    # set up PCA
+    pca = PCA(n_components=2)
+    pca_result = pca.fit_transform(data)
+    # means=pca.mean_[:1]
+    means=pca.mean_
+    # comps=pca.components_[:,:1]
+    comps=pca.components_
+    return (means, comps)
+
+def run_ae(data):
+    # Set up autoencoder
+    # TODO: put in normalization?
+    # Split the data into training and testing sets
+    # TODO: I never seem to use the test set so I got rid of it
+    train_size = int(1 * len(data))
+    X_train = data[:train_size]
+    # X_test = test_data[train_size:]
+    input_dim = X_train.shape[1]
+    print(f'input dim: {input_dim}')
+    encoding_dim = 2 # Set the desired encoding dimension
+
+    # Define the Autoencoder architecture
+    input_layer = Input(shape=(input_dim,))
+    encoded = Dense(encoding_dim, activation='relu')(input_layer)
+    decoded = Dense(input_dim, activation='sigmoid')(encoded)
+
+    autoencoder = Model(input_layer, decoded)
+    autoencoder.compile(optimizer='adam', loss='mse')
+
+    # Train the Autoencoder
+    autoencoder.fit(X_train, X_train, epochs=50, batch_size=32, shuffle=True, validation_split=0.2)
+    
+    # Get out base vectors to plot
+    # TODO: if I'm normalizing all my data I should also normalize this
+    base_vectors = [[1,0,0],[0,1,0],[1,0,0]]
+    # Define the encoder model
+    # TODO: what is the layer called?
+    encoder = Model(inputs=autoencoder.input, outputs=autoencoder.get_layer('dense').output)
+    encoded_base_vectors = encoder.predict(base_vectors)
+
+    # print(encoded_base_vectors.mean(axis=1))
+    ae_means = encoded_base_vectors.mean(axis=0)    # Don't want this???
+    print(encoded_base_vectors)
+    ae_comps = encoded_base_vectors.T[:,0:3]
+
+    return ae_means, ae_comps
+
 # Function to plot arrows
 def plot_arrows(ax, mean, vectors, color, label):
     u = []
@@ -207,28 +256,25 @@ if __name__ == "__main__":
     data = load_data('/Users/chemchair/Documents/GitHub/H2combustion_CVs/H2COMBUSTION_DATA-main-2/01_aimd.npz')
     inv_data = convert_to_invariant_dists(data)
 
-    print(inv_data.shape)
+    atom_names = [atom_with_number[int(z)] for z in data['Z'][0]]
+    pair_names = [f'{a}-{b}' for idx, a in enumerate(atom_names) for b in atom_names[idx + 1:]]
     
-    # example_data = {'R': np.array([[[2,1,0], [1,1,0], [1,2,0]]])}
-    # example = convert_to_invariant_dists(example_data)
+    example_data = {'R': np.array([[[2,1,0], [1,1,0], [1,2,0]]])}
+    example = convert_to_invariant_dists(example_data)
 
     # split the array into (possibly not exactly equal) portions
     partitioned_data = np.array_split(inv_data, 100)
 
     # choose one set of 100 data points to test on that isn't just the first one
-    test_data = partitioned_data[3]
+    test_data = partitioned_data[4]
+    # test_data = example_data['R'][0]
 
-    # set up PCA
-    pca = PCA(n_components=2)
-    pca_result = pca.fit_transform(test_data)
-    # means=pca.mean_[:1]
-    means=pca.mean_
-    # comps=pca.components_[:,:1]
-    comps=pca.components_
-    print(means)
-    print(pca.mean_)
-    print(comps)
-    print(pca.components_)
+    pca_means, pca_comps = run_pca(test_data)
+
+    ae_means, ae_comps = run_ae(test_data)
+
+    print(ae_means) # ae_means are not meaningful probably
+    print(ae_comps)
 
     # Plotting
     fig = plt.figure()
@@ -237,8 +283,16 @@ if __name__ == "__main__":
     ys = test_data[:,1]
     zs = test_data[:,2]
     ax.scatter(xs, ys, zs)
+    ax.set_xlabel(pair_names[0])
+    ax.set_ylabel(pair_names[1])
+    ax.set_zlabel(pair_names[2])
 
     # Plot PCA arrows
-    plot_arrows(ax, means, comps, 'red', 'PCA Components')
+    plot_arrows(ax, pca_means, pca_comps, 'red', 'PCA Components')
+    print(pca_means)
+    print(pca_comps)
+
+    # Plot AE arrows    
+    plot_arrows(ax, pca_means, ae_comps, 'blue', 'Autoencoder Vectors')
 
     plt.show()

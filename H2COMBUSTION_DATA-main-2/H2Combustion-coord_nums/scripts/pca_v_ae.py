@@ -2,8 +2,15 @@ import sys
 
 from matplotlib import pyplot as plt
 import numpy as np
+
 import ase
+from ase import Atoms
+from ase.visualize import view
+from ase.visualize.plot import plot_atoms
+
+import tensorflow as tf
 from sklearn.decomposition import PCA
+from tensorflow.keras import Sequential
 from tensorflow.keras.layers import Input, Dense
 from tensorflow.keras.models import Model
 
@@ -60,9 +67,9 @@ def load_data(path_npz):
 
     #     nums : ndarray, shape=(M, N)
     #     The 2D array of atomic numbers for M data points and N atoms
-    # Z_data = data['Z']
-    # print(f"Z shape: {Z_data.shape}")
-    # print(Z_data[0])
+    Z_data = data['Z']
+    print(f"Z shape: {Z_data.shape}")
+    print(Z_data[0])
     
     # # nmber of atoms??
     # N_data = data['N']
@@ -182,53 +189,179 @@ def convert_to_invariant_dists(data):
 
     return np.array(inv_data)
 
-def run_pca(data):
+def run_senwei_pca(data):
+     # Step 4.1: Compute the mean of the data
+    mean_vector = np.mean(data, axis=0, keepdims=True)
+
+    # Step 4.2: Center the data by subtracting the mean
+    centered_data = data - mean_vector
+
+    # Step 4.3: Compute the covariance matrix of the centered data
+    covariance_matrix = np.cov(centered_data, rowvar=False)
+
+    # Step 4.4: Perform eigendecomposition on the covariance matrix
+    eigenvalues, eigenvectors = np.linalg.eig(covariance_matrix)
+
+    # Step 4.5: Sort the eigenvectors based on eigenvalues (descending order)
+    sorted_indices = np.argsort(eigenvalues)[::-1]
+    eigenvalues = eigenvalues[sorted_indices]
+    eigenvectors = eigenvectors[:, sorted_indices]
+
+    # Step 4.6: Choose the number of components (optional)
+    k = 1  # Set the desired number of components
+    
+    # eigenvectors = eigenvectors/np.linalg.norm(eigenvectors,axis=0,keepdims=True)
+    # Step 4.7: Retain the top k components
+    selected_eigenvectors = eigenvectors[:, 0:1]
+    # print(selected_eigenvectors.shape)
+    # selected_eigenvectors = np.array([[1], [0]])
+    # Step 4.8: Transform your data to the new lower-dimensional space
+    transformed_data = np.dot(centered_data, selected_eigenvectors)
+
+    # print(np.dot(centered_data, selected_eigenvectors)-np.matmul(centered_data, selected_eigenvectors))
+    return mean_vector, selected_eigenvectors
+
+def run_skl_pca(data):
     # set up PCA
     pca = PCA(n_components=2)
-    pca_result = pca.fit_transform(data)
+    pca.fit_transform(data)
     # means=pca.mean_[:1]
     means=pca.mean_
     # comps=pca.components_[:,:1]
     comps=pca.components_
     return (means, comps)
 
-def run_ae(data):
-    # Set up autoencoder
-    # TODO: put in normalization?
-    # Split the data into training and testing sets
-    # TODO: I never seem to use the test set so I got rid of it
-    train_size = int(1 * len(data))
-    X_train = data[:train_size]
-    # X_test = test_data[train_size:]
-    input_dim = X_train.shape[1]
+def AE(data):
+    input_dim = data.shape[1]
     print(f'input dim: {input_dim}')
     encoding_dim = 2 # Set the desired encoding dimension
+    intermediate_dim = 64 # Set the width of the intermediate layer
 
     # Define the Autoencoder architecture
     input_layer = Input(shape=(input_dim,))
-    encoded = Dense(encoding_dim, activation='relu')(input_layer)
-    decoded = Dense(input_dim, activation='sigmoid')(encoded)
+    encoder = Sequential([Dense(intermediate_dim, activation='relu'),
+                          Dense(encoding_dim)])
+    encoded = encoder(input_layer)
+    decoded = tf.math.abs(Sequential([Dense(intermediate_dim, activation='relu'),
+                          Dense(input_dim)
+                          ])(encoded))
 
     autoencoder = Model(input_layer, decoded)
     autoencoder.compile(optimizer='adam', loss='mse')
 
     # Train the Autoencoder
-    autoencoder.fit(X_train, X_train, epochs=50, batch_size=32, shuffle=True, validation_split=0.2)
+    autoencoder.fit(data, data, epochs=500, batch_size=32, shuffle=True, validation_split=0.2)
+    
+    # Get out base vectors to plot
+    base_vectors = np.identity(input_dim)
+    encoded_base_vectors = encoder.predict(base_vectors)
+
+    ae_comps = encoded_base_vectors.T[:,0:3]
+
+    return ae_comps
+
+def run_ae(data):
+    # TODO: put in normalization?
+    input_dim = data.shape[1]
+    print(f'input dim: {input_dim}')
+    encoding_dim = 2 # Set the desired encoding dimension
+    intermediate_dim = 32 # Set the width of the intermediate layer
+
+    # Define the Autoencoder architecture
+    input_layer = Input(shape=(input_dim,))
+    encoder = Sequential([Dense(intermediate_dim, activation='relu'),
+                          Dense(encoding_dim)])
+    encoded = encoder(input_layer)
+    decoded = tf.math.abs(Sequential([Dense(intermediate_dim, activation='relu'),
+                          Dense(input_dim)
+                          ])(encoded))
+
+    autoencoder = Model(input_layer, decoded)
+    autoencoder.compile(optimizer='adam', loss='mse')
+
+    # Train the Autoencoder
+    duplicate_data = False
+    if (duplicate_data):
+        autoencoder.fit(np.tile(data, (10,1)), np.tile(data, (10,1)), epochs=500, batch_size=32, shuffle=True, validation_split=0.2)
+    else:
+        autoencoder.fit(data, data, epochs=500, batch_size=32, shuffle=True, validation_split=0.2)
     
     # Get out base vectors to plot
     # TODO: if I'm normalizing all my data I should also normalize this
-    base_vectors = [[1,0,0],[0,1,0],[1,0,0]]
+    base_vectors = np.identity(input_dim)
     # Define the encoder model
-    # TODO: what is the layer called?
-    encoder = Model(inputs=autoencoder.input, outputs=autoencoder.get_layer('dense').output)
     encoded_base_vectors = encoder.predict(base_vectors)
 
     # print(encoded_base_vectors.mean(axis=1))
     ae_means = encoded_base_vectors.mean(axis=0)    # Don't want this???
-    print(encoded_base_vectors)
-    ae_comps = encoded_base_vectors.T[:,0:3]
+    ae_comps = encoded_base_vectors.T[:,0:input_dim]
 
     return ae_means, ae_comps
+
+def test_3_atom():
+    data = load_data('../01_aimd.npz')
+    inv_data = convert_to_invariant_dists(data)
+
+    atom_names = [atom_with_number[int(z)] for z in data['Z'][0]]
+    pair_names = [f'{a}-{b}' for idx, a in enumerate(atom_names) for b in atom_names[idx + 1:]]
+    
+    example_data = {'R': np.array([[[2,1,0], [1,1,-1], [1,2,1]]])}
+    example = convert_to_invariant_dists(example_data)
+
+    # split the array into (possibly not exactly equal) portions
+    partitioned_data = np.array_split(inv_data, 100)
+
+    # choose one set of 100 data points to test on that isn't just the first one
+    test_data = partitioned_data[2]
+    # test_data = example_data['R'][0]
+
+    # NOTE: Connie confirmed that Senwei's PCA results in the same vector (including magnitude) as the scikit-learn PCA. 
+    pca_means, pca_comps = run_skl_pca(test_data)
+
+    ae_means, ae_comps = run_ae(test_data)
+
+    # Plotting
+    fig = plt.figure()
+    ax = fig.add_subplot(projection='3d')
+    xs = test_data[:,0]
+    ys = test_data[:,1]
+    zs = test_data[:,2]
+    ax.scatter(xs, ys, zs)
+    ax.set_xlabel(pair_names[0])
+    ax.set_ylabel(pair_names[1])
+    ax.set_zlabel(pair_names[2])
+
+    # Plot PCA arrows
+    plot_arrows(ax, pca_means, pca_comps, 'red', 'PCA Components')
+
+    # Plot AE arrows    
+    plot_arrows(ax, pca_means, ae_comps, 'blue', 'Autoencoder Vectors')
+
+    plt.legend()
+
+    plt.show()
+
+def test_n_atom():
+    # FUNCTION UNDER CONSTRUCTION
+    # Plot using t-sne?
+    # Plot using atomic forces?
+    # Make Atoms object?
+
+    data = load_data('../01_aimd.npz')
+    inv_data = convert_to_invariant_dists(data)
+
+    atom_names = [atom_with_number[int(z)] for z in data['Z'][0]]
+    combined_atom_names = "".join([str(i) for i in atom_names])
+    pair_names = [f'{a}-{b}' for idx, a in enumerate(atom_names) for b in atom_names[idx + 1:]]
+
+    # TODO: draw atoms in 3d space, then draw arrows based on the calculated forces
+    mols = [Atoms(combined_atom_names, positions=data['R'][i]) for i in range(len(data['R']))]
+    view(mols[650], viewer='vmd')
+    fig, ax = plt.subplots()
+    # plot_atoms(mols[650], ax, rotation=('90x,45y,56z'))
+    plt.show()
+
+    return
 
 # Function to plot arrows
 def plot_arrows(ax, mean, vectors, color, label):
@@ -253,46 +386,6 @@ if __name__ == "__main__":
     # args = sys.argv[1:]
     # task = args.pop(0)
 
-    data = load_data('/Users/chemchair/Documents/GitHub/H2combustion_CVs/H2COMBUSTION_DATA-main-2/01_aimd.npz')
-    inv_data = convert_to_invariant_dists(data)
+    test_3_atom()
 
-    atom_names = [atom_with_number[int(z)] for z in data['Z'][0]]
-    pair_names = [f'{a}-{b}' for idx, a in enumerate(atom_names) for b in atom_names[idx + 1:]]
-    
-    example_data = {'R': np.array([[[2,1,0], [1,1,0], [1,2,0]]])}
-    example = convert_to_invariant_dists(example_data)
-
-    # split the array into (possibly not exactly equal) portions
-    partitioned_data = np.array_split(inv_data, 100)
-
-    # choose one set of 100 data points to test on that isn't just the first one
-    test_data = partitioned_data[4]
-    # test_data = example_data['R'][0]
-
-    pca_means, pca_comps = run_pca(test_data)
-
-    ae_means, ae_comps = run_ae(test_data)
-
-    print(ae_means) # ae_means are not meaningful probably
-    print(ae_comps)
-
-    # Plotting
-    fig = plt.figure()
-    ax = fig.add_subplot(projection='3d')
-    xs = test_data[:,0]
-    ys = test_data[:,1]
-    zs = test_data[:,2]
-    ax.scatter(xs, ys, zs)
-    ax.set_xlabel(pair_names[0])
-    ax.set_ylabel(pair_names[1])
-    ax.set_zlabel(pair_names[2])
-
-    # Plot PCA arrows
-    plot_arrows(ax, pca_means, pca_comps, 'red', 'PCA Components')
-    print(pca_means)
-    print(pca_comps)
-
-    # Plot AE arrows    
-    plot_arrows(ax, pca_means, ae_comps, 'blue', 'Autoencoder Vectors')
-
-    plt.show()
+    # test_n_atom()

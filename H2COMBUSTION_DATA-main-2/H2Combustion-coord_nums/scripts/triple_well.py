@@ -74,11 +74,14 @@ def AE(data):
     # Define the Autoencoder architecture
     input_layer = Input(shape=(input_dim,))
     encoder = Sequential([Dense(intermediate_dim, activation='relu'),
+                          Dense(intermediate_dim, activation='relu'),
                           Dense(encoding_dim)])
     encoded = encoder(input_layer)
-    decoded = tf.math.abs(Sequential([Dense(intermediate_dim, activation='relu'),
-                          Dense(input_dim)
-                          ])(encoded))
+    decoder = Sequential([Dense(intermediate_dim, activation='relu'),
+                          Dense(intermediate_dim, activation='relu'),
+                          Dense(input_dim)])
+    # NOTE: the absolute value is an important aspect of the decoder
+    decoded = tf.math.abs(decoder(encoded))
 
     autoencoder = Model(input_layer, decoded)
     autoencoder.compile(optimizer='adam', loss='mse')
@@ -219,9 +222,9 @@ def run_simulation(method='PCA', T=10, height=0.1, sigma=0.2):
     plt.colorbar(contourf_3)
 
     # fig.colorbar(contourf_)
-    plt.title('Local {method} dynamics')
+    plt.title(f'Local {method} dynamics')
     plt.show()
 
 if __name__ == "__main__":
-    run_simulation('PCA', T=100)
-    run_simulation('AE', T=100)
+    run_simulation('PCA', T=10)
+    run_simulation('AE', T=10)

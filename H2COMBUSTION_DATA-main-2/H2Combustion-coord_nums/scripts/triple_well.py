@@ -4,6 +4,7 @@ import tensorflow as tf
 from tensorflow.keras import Sequential
 from tensorflow.keras.layers import Input, Dense
 from tensorflow.keras.models import Model
+from sklearn.preprocessing import normalize
 import pickle
 
 # np.random.seed(0)
@@ -11,7 +12,7 @@ threshold = 0.5
 
 class TripleWellSimulation:
 
-    def __init__(self, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, method='AE', checkpoint_name='triple_well.checkpoint'):
+    def __init__(self, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, method='AE', checkpoint_name='triple_well_normalized.checkpoint'):
         self.T = T
         self.Tdeposite = Tdeposite
         self.height = height
@@ -32,17 +33,11 @@ class TripleWellSimulation:
         self.trajectories = np.zeros((self.Nsteps+1, self.q0.shape[0], 2))
 
     def run(self, need_restart):
-        # Last time the function crashed. Need to restore the state.
+        # Last time the function crashed, so restore the last saved state.
         if need_restart:
             with open(self.checkpoint_name, 'rb') as f:
                 self = pickle.load(f)
 
-        # if self.method == 'AE':
-        #     trajectory, qs, eigenvectors = self.MD_AE(q0, self.T,  Tdeposite=0.5, height=height, sigma=sigma, dt=5e-3, beta=1.66) #(steps, bs, dim)
-        # else:
-        #     trajectory, qs, eigenvectors = self.MD_PCA(q0, self.T,  Tdeposite=0.5, height=height, sigma=sigma, dt=5e-3, beta=1.66) #(steps, bs, dim)
-
-        # run function...? and save along the way! maybe have to rearrange the MD function
         while self.iter < self.Nsteps:
             print(f'iteration {self.iter}')
             self.trajectories[self.iter, :] = self.q
@@ -68,9 +63,12 @@ class TripleWellSimulation:
                     self.qs = np.concatenate([mean_vector, self.qs], axis=0)
                     self.eigenvectors = np.concatenate([selected_eigenvectors, self.eigenvectors], axis=1)
                 with open(self.checkpoint_name, 'wb') as f:
+                    self.iter += 1
                     pickle.dump(self, f)
+                    self.iter -= 1
             self.iter += 1
         self.trajectories[self.Nsteps, :] = self.q
+        return self
 
     def plot(self):
         xx = np.linspace(-2, 2, 100)
@@ -195,6 +193,8 @@ class TripleWellSimulation:
         encoded_base_vectors = encoder.predict(base_vectors)
 
         ae_comps = encoded_base_vectors.T[:,0:input_dim]
+
+        ae_comps = normalize(ae_comps)
 
         return mean_vector, ae_comps.T
 
@@ -364,7 +364,8 @@ class TripleWellSimulation:
 
 if __name__ == "__main__":
     # TripleWellSimulation(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, method='AE', checkpoint_name='triple_well.checkpoint')
-    t = TripleWellSimulation(T=1000, Tdeposite=0.5, height=0.05, sigma=0.1, dt=1e-3, beta=1.0, method='AE', checkpoint_name='triple_well.checkpoint')
+    t = TripleWellSimulation(T=10, Tdeposite=0.5, height=0.05, sigma=0.1, dt=1e-3, beta=1.0, method='PCA', checkpoint_name='triple_well_normalized.checkpoint')
     # run('PCA', T=10)
-    t.run(need_restart=True)
+    # t.run_and_plot(need_restart=True)
+    t = t.run(need_restart=False)
     t.plot()

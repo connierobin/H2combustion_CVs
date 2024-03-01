@@ -8,6 +8,7 @@ import tensorflow as tf
 from tensorflow.keras import Sequential
 from tensorflow.keras.layers import Input, Dense
 from tensorflow.keras.models import Model
+from sklearn.preprocessing import normalize
 
 datadict_PES = scipy.io.loadmat('./R09PES3D.mat')
 max_PES = np.max(datadict_PES['V'])
@@ -112,6 +113,30 @@ def cart2zmat(X):
     Z = np.array(Z)
     return Z.T
 
+def plot_comparison(PCA_data, AE_data):
+    PCA_data = np.array(PCA_data)
+    AE_data = np.array(AE_data)
+    # TODO: plot a line for y=x
+    fig, ax = plt.subplots()
+    ax.scatter(PCA_data[:, 0], PCA_data[:, 1], label='PCA')
+    ax.scatter(AE_data[:, 0], AE_data[:, 1], label='AE')
+
+    # lims = [
+    #     np.min([ax.get_xlim(), ax.get_ylim()]),  # min of both axes
+    #     np.max([ax.get_xlim(), ax.get_ylim()]),  # max of both axes
+    # ]
+    # ax.plot(lims, lims, 'k-', alpha=0.75, zorder=0)
+
+    ax.x_label
+
+    # TODO: color code based on angle between vectors!!
+
+    ax.axline((0, 0), slope=1)
+
+    ax.legend()
+    ax.set_aspect('equal')
+    plt.show()
+
 def PCA(data): # datasize: N * dim
     # Step 4.1: Compute the mean of the data
     
@@ -145,9 +170,14 @@ def PCA(data): # datasize: N * dim
     # print('selected_eigenvector:', data.shape, data_z.shape, eigenvectors.shape, selected_eigenvectors.shape)
     # print(np.dot(centered_data, selected_eigenvectors)-np.matmul(centered_data, selected_eigenvectors))
     
-    print(selected_eigenvectors)
-    print(eigenvalues)
-
+    # reproduces eigenvalues
+    # print('eigenvalues')
+    # print(eigenvalues)
+    # print('one eigenvector')
+    # print(np.dot(selected_eigenvectors[:, 0], np.dot(covariance_matrix, selected_eigenvectors[:, 0])))
+    # print('all eigenvectors')
+    # print([np.dot(selected_eigenvectors[:, i], np.dot(covariance_matrix, selected_eigenvectors[:, i])) for i in range(len(selected_eigenvectors[0]))])
+    
     return mean_vector, std_vector, selected_eigenvectors, eigenvalues
 
 def AE(data):
@@ -183,14 +213,44 @@ def AE(data):
 
     ae_comps = encoded_base_vectors.T[:,0:input_dim]
 
-    ae_comp_norms = la.norm(ae_comps.T, axis=1)
+    ae_comp_norms = la.norm(ae_comps.T, axis=0)
 
-    print(ae_comps.T)
-    print(ae_comp_norms)
+    ae_comps_normalized = (ae_comps / ae_comp_norms[:, np.newaxis]).T
 
-    # ae_comps = normalize(ae_comps)
+    centered_data = (data - mean_vector)
+    covariance_matrix = np.cov(centered_data, rowvar=False)
 
-    return mean_vector, std_vector, ae_comps.T, ae_comp_norms
+    # variance of vector v is v dot (Sigma v) where Sigma is the covariance matrix
+    # source: https://math.stackexchange.com/questions/4806778/variance-in-the-direction-of-a-unit-vector-intuition-behind-formula#:~:text=Say%20we%20have%20a%20set,Σ%20is%20the%20covariance%20matrix.
+    # TODO: find better source for this
+    ae_variance = np.array([np.dot(ae_comps_normalized[:, i], np.dot(covariance_matrix, ae_comps_normalized[:, i]))for i in range(len(ae_comps_normalized[0]))])
+
+
+    sorted_indices = np.argsort(ae_variance)[::-1]
+    ae_variance = ae_variance[sorted_indices]
+    ae_comps_normalized = ae_comps_normalized[:, sorted_indices]
+
+    # Graham-Schmidt
+    # loop through each vector in ae_comps_normalized
+    #   project out each previous vector, if there are any
+    GS_eigenvectors = np.zeros((len(ae_comps_normalized), len(ae_comps_normalized[0])))
+    # GS_eigenvalues = np.array([])
+    print(ae_comps_normalized)
+    for i in range(len(ae_comps_normalized)):
+        cur_vec = ae_comps_normalized[i]
+        for j in range(i-1, -1, -1):
+            prev_vec = GS_eigenvectors[j]
+            # subtract the projection of cur_vec onto prev_vec
+            cur_vec = cur_vec - prev_vec * np.dot(cur_vec, prev_vec) / np.dot(prev_vec, prev_vec)
+        GS_eigenvectors[i] = cur_vec
+        print(i)
+        print(cur_vec)
+        print(GS_eigenvectors)
+    # calcuate the variances (eigenvalues) of the new vectors
+    GS_eigenvalues = np.array([np.dot(GS_eigenvectors[:, i], np.dot(covariance_matrix, GS_eigenvectors[:, i]))for i in range(len(GS_eigenvectors[0]))])
+    
+    # the variances are the equivalent of the eigenvalues from PCA
+    return mean_vector, std_vector, ae_comps_normalized, ae_variance, GS_eigenvectors, GS_eigenvalues
 
 def gradV(x): # x shape 1*9
     eps = 1e-3
@@ -220,6 +280,9 @@ def Gaussian(x, qx, qstd, qsz, method, choose_eigenvalue, save_eigenvector_s, he
         # print('qx shape', qx.shape, save_eigenvector_s.shape)
         x_z = cart2zmat(x).T
         # print('eigen: ', x_z.shape, qsz.shape, save_eigenvector_s.shape) # 1*3, gn*3, gn*3*k
+
+        # each distance vector from x to q, multiplied against the eigenvectors
+        # TODO: print the shapes to understand this better
         dist = np.sum(np.expand_dims((x_z - qsz), axis=2)*save_eigenvector_s, axis=1)**2
         # local_bool = (np.sum((x_z - qsz)**2, axis=-1) < threshold**2)
         # print(dist.shape) # gn*k
@@ -269,6 +332,10 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, coarse=1, ic_method='
     choose_eigenvalue = None
     method = 'first_three_eigen'
     variance = 0.8
+
+    compare_variances_PCA = []
+    compare_variances_AE = []
+
     for i in tqdm(range(Nsteps)):
         trajectories[i // coarse, :] = q
         q = next_step(q, qs, qstd, qsz, method, choose_eigenvalue, save_eigenvector_s, height, sigma, dt, beta) # 1*9
@@ -286,8 +353,13 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, coarse=1, ic_method='
 
                 if ic_method == 'PCA':
                     mean_vector, std_vector, selected_eigenvectors, eigenvalues = PCA(data)
+                elif ic_method == 'compare':
+                    mean_vector, std_vector, selected_eigenvectors, eigenvalues, GS_eigenvectors, GS_eigenvalues = AE(data)
+                    compare_variances_AE.append(eigenvalues)
+                    mean_vector, std_vector, selected_eigenvectors, eigenvalues = PCA(data)
+                    compare_variances_PCA.append(eigenvalues)
                 else:
-                    mean_vector, std_vector, selected_eigenvectors, eigenvalues = AE(data)
+                    mean_vector, std_vector, selected_eigenvectors, eigenvalues, GS_eigenvectors, GS_eigenvalues = AE(data)
 
                 # print(selected_eigenvectors.shape, eigenvalues.shape)
                 qs = mean_vector#q
@@ -299,22 +371,22 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, coarse=1, ic_method='
                 trajectories_PCA = np.zeros((NstepsDeposite, 1, 3))
                 
                 save_eigenvector_s = np.expand_dims(selected_eigenvectors, axis=0)
-                save_eigenvalue_s = np.expand_dims(eigenvalues, axis=0)
-                
-                if ic_method == 'PCA':
-                    choose_eigenvalue_tmp = np.zeros((1,3))
-                    cumsum = np.cumsum(save_eigenvalue_s, axis=1)
-                    var_ratio = cumsum/np.sum(save_eigenvalue_s)
-                    idx = np.argmax(var_ratio>variance)
-                    # print(save_eigenvalue_s, cumsum/np.sum(save_eigenvalue_s), np.argmax(var_ratio>variance))
-                    for s in range(idx+1):
-                        choose_eigenvalue_tmp[0,s]=1
-                    choose_eigenvalue = choose_eigenvalue_tmp
-                    # for k in range(3):
-                    #     cumsum = np.cumsum(save_eigenvalue_s, axis=1)
+                if ic_method == 'PCA' or ic_method == 'compare':
+                    save_eigenvalue_s = np.expand_dims(eigenvalues, axis=0)
                 else:
-                    # for the AE method, choose all the eigenvectors
-                    choose_eigenvalue = np.ones((1,len(eigenvalues)))
+                    save_eigenvalue_s = np.expand_dims(GS_eigenvalues, axis=0)
+                
+                choose_eigenvalue_tmp = np.zeros((1,3))
+                cumsum = np.cumsum(save_eigenvalue_s, axis=1)
+                # Calculate CDF = cumulative distribution function
+                var_ratio = cumsum/np.sum(save_eigenvalue_s)
+                idx = np.argmax(var_ratio>variance)
+                # print(save_eigenvalue_s, cumsum/np.sum(save_eigenvalue_s), np.argmax(var_ratio>variance))
+                for s in range(idx+1):
+                    choose_eigenvalue_tmp[0,s]=1
+                choose_eigenvalue = choose_eigenvalue_tmp
+                # for k in range(3):
+                #     cumsum = np.cumsum(save_eigenvalue_s, axis=1)
                     
                 # print(save_eigenvector_s.shape, save_eigenvalue_s.shape)
             else:
@@ -324,8 +396,13 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, coarse=1, ic_method='
                 data = np.squeeze(data, axis=1)  # (100, 2)
                 if ic_method == 'PCA':
                     mean_vector, std_vector, selected_eigenvectors, eigenvalues = PCA(data)
+                elif ic_method == 'compare':
+                    mean_vector, std_vector, selected_eigenvectors, eigenvalues, GS_eigenvectors, GS_eigenvalues = AE(data)
+                    compare_variances_AE.append(GS_eigenvalues)
+                    mean_vector, std_vector, selected_eigenvectors, eigenvalues = PCA(data)
+                    compare_variances_PCA.append(eigenvalues)
                 else:
-                    mean_vector, std_vector, selected_eigenvectors, eigenvalues = AE(data)
+                    mean_vector, std_vector, selected_eigenvectors, eigenvalues, GS_eigenvectors, GS_eigenvalues = AE(data)
 
                 q_deposit = q
                 q_deposit = mean_vector
@@ -360,6 +437,10 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, coarse=1, ic_method='
 
                 trajectories_PCA = np.zeros((NstepsDeposite, 1, 3))
     trajectories[NstepsSave, :] = q
+
+    if method == 'compare':
+        plot_comparison(compare_variances_PCA, compare_variances_AE)
+
     return trajectories, qs, save_eigenvector_s, save_eigenvalue_s
 
 
@@ -382,8 +463,8 @@ if __name__ == '__main__':
     # ax1 = fig.add_subplot(1, 2, 1)
     # contourf_ = ax1.contourf(X, Y, W, levels=29)
 
-    ic_method = 'PCA'
-    T = .01
+    ic_method = 'compare'
+    T = 0.4
 
     cmap = plt.get_cmap('plasma')
     ircdata = scipy.io.loadmat('./irc09.mat')['irc09'][0][0][3]
@@ -403,8 +484,8 @@ if __name__ == '__main__':
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
     ax.scatter(z_trajectory[:, 0], z_trajectory[:, 1], z_trajectory[:, 2], c=indices, cmap=cmap)
-    plt.show()
     plt.savefig('rxn9_test.png')
+    plt.show()
     np.savez(f'T10_deposit5e-3_dt2e-5-{ic_method}s-InternalCoordinates_height1_T10_debug-nonlocal', z = z_trajectory, x = trajectories, qs=qs, eignvectors=save_eigenvector_s, eigenvalues=save_eigenvalue_s)
 
     #     # print(trajectory.shape)

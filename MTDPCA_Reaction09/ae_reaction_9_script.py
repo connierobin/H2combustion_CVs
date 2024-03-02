@@ -127,14 +127,30 @@ def plot_comparison(PCA_data, AE_data):
     # ]
     # ax.plot(lims, lims, 'k-', alpha=0.75, zorder=0)
 
-    ax.x_label
+    plt.xlabel('Variance of First CV')
+    plt.ylabel('Variance of Second CV')
 
     # TODO: color code based on angle between vectors!!
 
     ax.axline((0, 0), slope=1)
 
     ax.legend()
+
     ax.set_aspect('equal')
+    buffer = 0.1
+    xmin = min([min(PCA_data[:, 0]), min(AE_data[:, 0])])
+    xmax = max([max(PCA_data[:, 0]), max(AE_data[:, 0])])
+    ymin = min([min(PCA_data[:, 1]), min(AE_data[:, 1])])
+    ymax = max([max(PCA_data[:, 1]), max(AE_data[:, 1])])
+    all_min = min([xmin, ymin])
+    all_max = max([xmax, ymax])
+    axis_length = all_max - all_min
+    # all_min = all_min +  axis_length * buffer
+    all_min = 0
+    all_max = all_max + axis_length * buffer
+    ax.set_xlim([all_min, all_max])
+    ax.set_ylim([all_min, all_max])
+
     plt.show()
 
 def PCA(data): # datasize: N * dim
@@ -235,7 +251,7 @@ def AE(data):
     #   project out each previous vector, if there are any
     GS_eigenvectors = np.zeros((len(ae_comps_normalized), len(ae_comps_normalized[0])))
     # GS_eigenvalues = np.array([])
-    print(ae_comps_normalized)
+    # print(ae_comps_normalized)
     for i in range(len(ae_comps_normalized)):
         cur_vec = ae_comps_normalized[i]
         for j in range(i-1, -1, -1):
@@ -243,12 +259,19 @@ def AE(data):
             # subtract the projection of cur_vec onto prev_vec
             cur_vec = cur_vec - prev_vec * np.dot(cur_vec, prev_vec) / np.dot(prev_vec, prev_vec)
         GS_eigenvectors[i] = cur_vec
-        print(i)
-        print(cur_vec)
-        print(GS_eigenvectors)
+        # print(i)
+        # print(cur_vec)
+        # print(GS_eigenvectors)
     # calcuate the variances (eigenvalues) of the new vectors
     GS_eigenvalues = np.array([np.dot(GS_eigenvectors[:, i], np.dot(covariance_matrix, GS_eigenvectors[:, i]))for i in range(len(GS_eigenvectors[0]))])
     
+    # Sort the eigenvectors and eigenvalues based on the GS variance/eigenvalues (descending order)
+    sorted_indices = np.argsort(GS_eigenvalues)[::-1]
+    GS_eigenvalues = GS_eigenvalues[sorted_indices]
+    GS_eigenvectors = GS_eigenvectors[:, sorted_indices]
+    ae_variance = ae_variance[sorted_indices]
+    ae_comps_normalized = ae_comps_normalized[:, sorted_indices]
+
     # the variances are the equivalent of the eigenvalues from PCA
     return mean_vector, std_vector, ae_comps_normalized, ae_variance, GS_eigenvectors, GS_eigenvalues
 
@@ -438,7 +461,8 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, coarse=1, ic_method='
                 trajectories_PCA = np.zeros((NstepsDeposite, 1, 3))
     trajectories[NstepsSave, :] = q
 
-    if method == 'compare':
+    if ic_method == 'compare':
+        print('comparing')
         plot_comparison(compare_variances_PCA, compare_variances_AE)
 
     return trajectories, qs, save_eigenvector_s, save_eigenvalue_s
@@ -464,7 +488,7 @@ if __name__ == '__main__':
     # contourf_ = ax1.contourf(X, Y, W, levels=29)
 
     ic_method = 'compare'
-    T = 0.4
+    T = 0.04
 
     cmap = plt.get_cmap('plasma')
     ircdata = scipy.io.loadmat('./irc09.mat')['irc09'][0][0][3]

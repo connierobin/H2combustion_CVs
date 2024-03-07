@@ -5,6 +5,9 @@ from scipy.interpolate import RegularGridInterpolator
 import numpy.linalg as la
 from tqdm import tqdm
 
+import time
+from pyscf import gto, dft, scf, mp, cc
+
 '''
 (1) Load the potential energy surface on the grid points
 (2) Define an interpolator to get the energy values on grid points 
@@ -27,6 +30,7 @@ V = V.reshape(-1)
 interpolator = RegularGridInterpolator((datadict_PES['X'][:, 0], datadict_PES['Y'][:, 0], datadict_PES['Z'][:, 0]),
                                        datadict_PES['V'])
 
+# global cc_time = 0
 
 # Outside the grid, we add the harmonic potential to avoid a configuration going out
 def is_inside_box(x, box):
@@ -48,16 +52,114 @@ def harmonic_potential_outside_box(x, box):
     harmonic_potential = np.sum(coef * (np.maximum(box[:, 0] - x, 0)) ** 2 + coef * (np.maximum(x - box[:, 1], 0)) ** 2)
     return harmonic_potential
 
+def test_cc_time(x):
+    global cc_time
+    atoms = ['H', 'O', 'H']
+    # print(x.shape)
+    # NOTE: WHEN using O, O, H instead of H, O, H: the spin = 3 here is a guess, I don't actually know what the spin should be
+    mol = gto.M(atom = f'{atoms[0]} {x[0]} {x[1]} {x[2]}; {atoms[1]} {x[3]} {x[4]} {x[5]}; {atoms[2]} {x[6]} {x[7]} {x[8]}', basis = 'ccpvdz')
+    cc_start = time.time()
+    ccsd_mol = mol.RHF().run()
+    ccsd_mol = ccsd_mol.CCSD().run()
+    cc_end = time.time()
+    cc_time = cc_time + (cc_end - cc_start)
+    return
+
+def test_energy_calculators(x, ref_energy, ref_time):
+    atoms = ['O', 'O', 'H']
+    # print(x.shape)
+    start_setup = time.time()
+    # NOTE: the spin here is a guess, I don't actually know what the spin should be
+    mol = gto.M(atom = f'{atoms[0]} {x[0]} {x[1]} {x[2]}; {atoms[1]} {x[3]} {x[4]} {x[5]}; {atoms[2]} {x[6]} {x[7]} {x[8]}', basis = 'ccpvdz', spin = 3)
+    end_setup = time.time()
+
+    # Hartree Fock
+    print("Hartree Fock")
+    start_hf = time.time()
+    hf_mol = scf.RHF(mol)
+    hf_mol.kernel()
+    end_hf = time.time()
+
+    # Default DFT
+    print("DFT")
+    start_default_dft = time.time()
+    dft_mol = dft.RKS(mol)
+    dft_mol.kernel()
+    end_default_dft = time.time()
+
+    # PBE DFT
+    print("PBE DFT")
+    start_pbe_dft = time.time()
+    pbe_mol = dft.RKS(mol)
+    pbe_mol.xc = 'pbe'
+    # pbe_mol = pbe_mol.newton()  # what does this do?
+    pbe_mol.kernel()
+    end_pbe_dft = time.time()
+
+    # CCSD
+    print("CCSD")
+    start_ccsd = time.time()
+    ccsd_mol = mol.RHF().run()
+    ccsd_mol = ccsd_mol.CCSD().run()
+    end_ccsd = time.time()
+
+    # MP2
+    print("MP2")
+    # TODO: why is this not running!!!!!
+    start_mp2 = time.time()
+    mp2_mol = mol.HF()
+    # mp2_mol = mp2_mol.MP2().run()
+    mp2_mol = mp.MP2(mp2_mol)
+    mp2_mol = mp2_mol.kernel()
+    end_mp2 = time.time()
+
+    setup_time = end_setup - start_setup
+    hf_time = end_hf - start_hf
+    default_dft_time = end_default_dft - start_default_dft
+    pbe_dft_time = end_pbe_dft - start_pbe_dft
+    ccsd_time = end_ccsd - start_ccsd
+    mp2_time = end_mp2 - start_mp2
+
+    # print(f'Setup time: {setup_time}')
+    # print(f'HF time: {hf_time}')
+    # print(f'Default DFT time: {default_dft_time}')
+    # print(f'PBE DFT time: {pbe_dft_time}')
+    # print(f'CCSD time: {ccsd_time}')
+    # print(f'MP2 time: {mp2_time}')
+
+    methods = ['Reference', 'HF', 'Default DFT', 'PBE', 'CCSD', 'MP2']
+    times = [ref_time, hf_time, default_dft_time, pbe_dft_time, ccsd_time, mp2_time]
+    energies = [ref_energy, hf_mol.e_tot, dft_mol.e_tot, pbe_mol.e_tot, ccsd_mol.e_tot, mp2_mol.e_tot]
+
+    fig = plt.figure()
+    ax = fig.add_subplot()
+    for i in range(len(methods)):
+        print(times[i])
+        print(energies[i])
+        ax.scatter([times[i]], [energies[i]], label=methods[i])
+    plt.legend()
+    plt.xlabel('Calculation Time')
+    plt.ylabel('Energy')
+    plt.show()
 
 def potential(x):
     z = cart2zmat(x)
 
+    start_interpolator = time.time()
     if is_inside_box(z, box):
-        return interpolator(z.reshape(1, -1))
+        result = interpolator(z.reshape(1, -1))
     else:
         distances = np.linalg.norm(z.reshape(1, -1) - XYZ_, axis=1)
         minidx = np.argmin(distances)
-        return V[minidx] + harmonic_potential_outside_box(z.reshape(-1), box)
+        result = V[minidx] + harmonic_potential_outside_box(z.reshape(-1), box)
+    end_interpolator = time.time()
+    interpolator_time = end_interpolator - start_interpolator
+
+    # Comment out these lines to stop testing
+    # test_energy_calculators(x[0], result, interpolator_time)
+    # test_cc_time(x[-1])
+
+    return result
 
 
 '''
@@ -141,7 +243,7 @@ def PCA(data):  # datasize: N * dim
     eigenvectors = eigenvectors[:, sorted_indices]
 
     # Step 4.6: Choose the number of components (optional)
-    k = 3  # Set the desired number of components
+    k = 2  # Set the desired number of components
 
     # Step 4.7: Retain the top k components
     selected_eigenvectors = eigenvectors[:, 0:k]
@@ -299,17 +401,20 @@ def next_step(qnow, qsz, chosen_eigenvector, saved_eigenvectors, height, sigma, 
 
 if __name__ == '__main__':
 
-    T = 1
+    T = .01
     cmap = plt.get_cmap('plasma')
     ircdata = scipy.io.loadmat('irc09.mat')['irc09'][0][0][3]
 
     # choose initial configuration
     x0 = ircdata[:, 5:6].T
 
+    # global cc_time
+    # cc_time = 0.
     coarse = 100
     for i in range(1):
         trajectories, qs, save_eigenvector_s, save_eigenvalue_s = MD(x0, T=T, Tdeposite=1e-2, height=1, sigma=0.3,
                                                                      dt=2e-5, beta=1, coarse=coarse)
+    # print(cc_time)
 
     z_trajectory = (cart2zmat(trajectories[:, 0])).T
 

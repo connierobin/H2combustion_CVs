@@ -113,19 +113,40 @@ def cart2zmat(X):
     Z = np.array(Z)
     return Z.T
 
-def plot_comparison(PCA_data, AE_data):
+def plot_comparison(PCA_data, AE_data, PCA_vectors, AE_vectors):
     PCA_data = np.array(PCA_data)
     AE_data = np.array(AE_data)
-    # TODO: plot a line for y=x
+
+    similarities = []
+    for i in range(len(PCA_vectors)):
+        similarity_value = 0.
+        for j in range(2):  # Only compare the first 2 vectors
+            similarity_value = similarity_value + (1 - scipy.spatial.distance.cosine(PCA_vectors[i][j], AE_vectors[i][j]))
+        similarities.append(similarity_value)
+    
+    # TODO: plot the cosine similarities on their own
+
+    # TODO: use 'cool' and 'autumn' colormaps
     fig, ax = plt.subplots()
-    ax.scatter(PCA_data[:, 0], PCA_data[:, 1], label='PCA')
-    ax.scatter(AE_data[:, 0], AE_data[:, 1], label='AE')
+    # cmap = 
+    ax.scatter(PCA_data[:, 0], PCA_data[:, 1], label='PCA', c=similarities, cmap='autumn')
+    ax.scatter(AE_data[:, 0], AE_data[:, 1], label='AE (orthogonalized)', c=similarities, cmap='winter')
 
     # lims = [
     #     np.min([ax.get_xlim(), ax.get_ylim()]),  # min of both axes
     #     np.max([ax.get_xlim(), ax.get_ylim()]),  # max of both axes
     # ]
     # ax.plot(lims, lims, 'k-', alpha=0.75, zorder=0)
+
+    annotate = False
+    if annotate:
+        n = list(range(len(AE_data[:, 1])))
+        for i, txt in enumerate(n):
+            ax.annotate(txt, (AE_data[:, 0][i], AE_data[:, 1][i]))
+
+        n = list(range(len(PCA_data[:, 1])))
+        for i, txt in enumerate(n):
+            ax.annotate(txt, (PCA_data[:, 0][i], PCA_data[:, 1][i]))
 
     plt.xlabel('Variance of First CV')
     plt.ylabel('Variance of Second CV')
@@ -358,6 +379,9 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, coarse=1, ic_method='
 
     compare_variances_PCA = []
     compare_variances_AE = []
+    compare_vectors_PCA = []
+    compare_vectors_AE = []
+    use_GS = True
 
     for i in tqdm(range(Nsteps)):
         trajectories[i // coarse, :] = q
@@ -378,9 +402,15 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, coarse=1, ic_method='
                     mean_vector, std_vector, selected_eigenvectors, eigenvalues = PCA(data)
                 elif ic_method == 'compare':
                     mean_vector, std_vector, selected_eigenvectors, eigenvalues, GS_eigenvectors, GS_eigenvalues = AE(data)
-                    compare_variances_AE.append(eigenvalues)
+                    if use_GS:
+                        compare_variances_AE.append(GS_eigenvalues)
+                        compare_vectors_AE.append(GS_eigenvectors)
+                    else:
+                        compare_variances_AE.append(eigenvalues)
+                        compare_vectors_AE.append(selected_eigenvectors)
                     mean_vector, std_vector, selected_eigenvectors, eigenvalues = PCA(data)
                     compare_variances_PCA.append(eigenvalues)
+                    compare_vectors_PCA.append(selected_eigenvectors)
                 else:
                     mean_vector, std_vector, selected_eigenvectors, eigenvalues, GS_eigenvectors, GS_eigenvalues = AE(data)
 
@@ -421,9 +451,15 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, coarse=1, ic_method='
                     mean_vector, std_vector, selected_eigenvectors, eigenvalues = PCA(data)
                 elif ic_method == 'compare':
                     mean_vector, std_vector, selected_eigenvectors, eigenvalues, GS_eigenvectors, GS_eigenvalues = AE(data)
-                    compare_variances_AE.append(GS_eigenvalues)
+                    if use_GS:
+                        compare_variances_AE.append(GS_eigenvalues)
+                        compare_vectors_AE.append(GS_eigenvectors)
+                    else:
+                        compare_variances_AE.append(eigenvalues)
+                        compare_vectors_AE.append(selected_eigenvectors)
                     mean_vector, std_vector, selected_eigenvectors, eigenvalues = PCA(data)
                     compare_variances_PCA.append(eigenvalues)
+                    compare_vectors_PCA.append(selected_eigenvectors)
                 else:
                     mean_vector, std_vector, selected_eigenvectors, eigenvalues, GS_eigenvectors, GS_eigenvalues = AE(data)
 
@@ -463,7 +499,7 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, coarse=1, ic_method='
 
     if ic_method == 'compare':
         print('comparing')
-        plot_comparison(compare_variances_PCA, compare_variances_AE)
+        plot_comparison(compare_variances_PCA, compare_variances_AE, compare_vectors_PCA, compare_vectors_AE)
 
     return trajectories, qs, save_eigenvector_s, save_eigenvalue_s
 
@@ -488,7 +524,7 @@ if __name__ == '__main__':
     # contourf_ = ax1.contourf(X, Y, W, levels=29)
 
     ic_method = 'compare'
-    T = 0.04
+    T = 0.5
 
     cmap = plt.get_cmap('plasma')
     ircdata = scipy.io.loadmat('./irc09.mat')['irc09'][0][0][3]

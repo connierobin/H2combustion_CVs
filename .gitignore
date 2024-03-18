@@ -1,3 +1,8 @@
 
 *.pyc
 .DS_Store
+MTDPCA_Reaction09/rxn9_test.png
+H2COMBUSTION_DATA-main-2/H2Combustion-coord_nums/scripts/triple_well_unnormalized.checkpoint
+H2COMBUSTION_DATA-main-2/H2Combustion-coord_nums/scripts/triple_well_test.checkpoint
+H2COMBUSTION_DATA-main-2/H2Combustion-coord_nums/scripts/triple_well_normalized.checkpoint
+H2COMBUSTION_DATA-main-2/H2Combustion-coord_nums/scripts/triple_well.checkpoint

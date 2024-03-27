@@ -2,6 +2,8 @@ from matplotlib import pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
+from matplotlib import colormaps
+
 def Psi(dist):
 
     sigma = 1
@@ -81,11 +83,22 @@ def GradGuassian(x, centers, eigenvectors, h, sigma):
     # x: 1 * M
     # centers: N * M
     # eigenvectors: N * M * k
+    env_sigma = sigma / 10.
+
     x_minus_centers = x - centers # N * M
+
+    x_distance = np.linalg.norm(x_minus_centers, axis=1)   # want N * 1 from the N * M
+    envelope_exps = (1/env_sigma**2)*np.exp(-np.expand_dims(x_distance, axis=1)/2/env_sigma**2)   # want N * 1
+    # print(f'grad envelope_exps: {envelope_exps.shape}')
+
     x_minus_centers = np.expand_dims(x_minus_centers, axis=1) # N * 1 * M
     x_projected = np.matmul(x_minus_centers, eigenvectors) # N * 1 * k
     x_projected_sq_sum = np.sum(x_projected**2, axis=(-2, -1)) # N
     exps = -h/sigma**2*np.exp(-np.expand_dims(x_projected_sq_sum, axis=1)/2/sigma**2) # N * 1
+
+    # print(f'exps: {exps.shape}')
+    exps = exps * envelope_exps # still N * 1 ideally
+
     PTPx = np.matmul(eigenvectors, np.transpose(x_projected, axes=(0,2,1))) # N * M * 1
     PTPx = np.squeeze(PTPx, axis=2) # N * M
     grad = np.sum(exps * PTPx, axis=0, keepdims=True) # 1 * M
@@ -96,11 +109,24 @@ def SumGuassian(x, centers, eigenvectors, h, sigma):
     # x: 1 * M
     # centers: N * M
     # eigenvectors: N * M * k
+    env_sigma = sigma / 10.
+
     x_minus_centers = x - centers # N * M
+
+    # print(f'x_minus_centers: {x_minus_centers.shape}')
+    x_distance = np.linalg.norm(x_minus_centers, axis=1)   # want N * 1 from the N * M
+    envelope_exps = np.exp(-np.expand_dims(x_distance, axis=1)/2/env_sigma**2)   # want N * 1
+    # TODO: ONLY add this along the inverse space! Subtract away the projected part. 
+
+    # print(f'envelope_exps: {envelope_exps.shape}')
+
     x_minus_centers = np.expand_dims(x_minus_centers, axis=1) # N * 1 * M
     x_projected = np.matmul(x_minus_centers, eigenvectors) # N * 1 * k
     x_projected_sq_sum = np.sum(x_projected**2, axis=(-2, -1)) # N
     exps = h*np.exp(-np.expand_dims(x_projected_sq_sum, axis=1)/2/sigma**2) # N * 1
+
+    exps = exps * envelope_exps
+
     grad = np.sum(exps, axis=0, keepdims=True) # 1 * M
 
     # TODO: make it so that the distance from the center is a factor. Aka when we go to the higher dim it is a sphere not a cylinder
@@ -113,9 +139,40 @@ def SumGuassian(x, centers, eigenvectors, h, sigma):
 
     return grad
 
+def DistSumGuassian(x, centers, eigenvectors, h, sigma):
+    # x: 1 * M
+    # centers: N * M
+    # eigenvectors: N * M * k
+    env_sigma = sigma / 10.
+
+    x_minus_centers = x - centers # N * M
+
+    x_distance = np.linalg.norm(x_minus_centers, axis=1)   # want N * 1 from the N * M
+    envelope_exps = np.exp(-np.expand_dims(x_distance, axis=1)/2/env_sigma**2)   # want N * 1
+
+    x_minus_centers_dists = np.linalg.norm(x_minus_centers, axis=1) # WANT this to be N
+    x_minus_centers = np.expand_dims(x_minus_centers, axis=1) # N * 1 * M
+    x_projected = np.matmul(x_minus_centers, eigenvectors) # N * 1 * k
+    x_projected_sq_sum = np.sum(x_projected**2, axis=(-2, -1)) # N
+    exps = h*np.exp(-np.expand_dims(x_projected_sq_sum, axis=1)/2/sigma**2) # N * 1
+
+    exps = exps * envelope_exps
+
+    grad = np.sum(exps, axis=0, keepdims=True) # 1 * M
+
+    # result = np.array(list(zip(x_minus_centers_dists, exps[:,0])))  # ideally this is (M,M)
+    result = [x_minus_centers_dists, exps[:,0]]
+    return result
+
 def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT):
     # M: dim
     r = np.random.randn(1, M)*1
+
+    if M == 30:
+        r = np.reshape(ten_atom_init, (1,30))
+
+    if M == 9:
+        r = np.reshape(three_atom_init, (1,9))
 
     Nsteps = round(T / dt)
     NstepsDeposite = round(Tdeposite / dt)
@@ -132,6 +189,11 @@ def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT):
     GaussGrad_values = []
     LJ_Gauss_values = []
     LJGrad_GaussGrad_values = []
+    Gauss_v_dist_values = []
+    r_values = []
+
+    LJ_center_values = []
+    Gauss_center_values = []
 
     for i in tqdm(range(Nsteps)):
         print(LJpotential(r))
@@ -142,8 +204,10 @@ def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT):
             Gauss = 0
             GaussGrad = 0
         else:
+            Gauss_v_dist = DistSumGuassian(r, rcenters, eigenvectors, h, sigma)
             Gauss = np.sum(SumGuassian(r, rcenters, eigenvectors, h, sigma))
             GaussGrad = np.sum(GradGuassian(r, rcenters, eigenvectors, h, sigma))
+            Gauss_v_dist_values.append(Gauss_v_dist)
 
         LJ_values.append(LJpot)
         LJGrad_values.append(LJGrad)
@@ -151,6 +215,7 @@ def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT):
         GaussGrad_values.append(GaussGrad)
         LJ_Gauss_values.append(LJpot + Gauss)
         LJGrad_GaussGrad_values.append(LJGrad + GaussGrad)
+        r_values.append(r)
 
         r = next_step(r, rcenters, eigenvectors, h, sigma, kbT, dt)
         # print(trajectories4PCA.shape, r.shape)
@@ -171,6 +236,9 @@ def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT):
 
                 ### reset the PCA dataset
                 trajectories4PCA = np.zeros((NstepsDeposite, 1, M))
+
+                LJ_center_values.append(LJpotential(mean_vector))
+                Gauss_center_values.append(SumGuassian(mean_vector, rcenters, eigenvectors, h, sigma))
             else:
                 ### conducting PCA ###
                 data = trajectories4PCA
@@ -189,8 +257,16 @@ def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT):
                 ### reset the PCA dataset
                 trajectories4PCA = np.zeros((NstepsDeposite, 1, M))
 
+                LJ_center_values.append(LJpotential(mean_vector))
+                Gauss_center_values.append(SumGuassian(mean_vector, rcenters, eigenvectors, h, sigma))
+
     analyze_means(rcenters)
+    # analyze_dist_gauss(Gauss_v_dist_values)
+    analyze_iter_gauss(Gauss_v_dist_values)
     analyze_LJ_potential(LJ_values, LJGrad_values, Gauss_values, GaussGrad_values, LJ_Gauss_values, LJGrad_GaussGrad_values)
+    if M == 9:
+        # show_trajectory_plot(np.array(r_values).reshape((len(r_values), 9)), LJ_values, Gauss_values)
+        show_trajectory_plot(rcenters, np.array(LJ_center_values), np.reshape(np.array(Gauss_center_values), (len(Gauss_center_values))))
 
     return None
 
@@ -224,34 +300,205 @@ def analyze_means(means):
     plt.show()
     return
 
-def analyze_LJ_potential(LJ_values, LJGrad_values, Gauss_values, GaussGrad_values, LJ_Gauss_values, LJGrad_GaussGrad_values):
-    plt.plot(LJ_values, label='LJ potential')
+def analyze_dist_gauss(Gauss_v_dist_values):
+    num_iters = len(Gauss_v_dist_values)
+    cmap = colormaps.get_cmap('plasma')
+    for i in range(num_iters):
+        color_scale_factor = float(i) / num_iters
+        if i == 0:
+            plt.scatter(Gauss_v_dist_values[i][0], Gauss_v_dist_values[i][1], c=cmap(color_scale_factor), label='Iteration 1')
+        elif i == num_iters - 1:
+            plt.scatter(Gauss_v_dist_values[i][0], Gauss_v_dist_values[i][1], c=cmap(color_scale_factor), label=f'Iteration {num_iters}')
+        else:
+            plt.scatter(Gauss_v_dist_values[i][0], Gauss_v_dist_values[i][1], c=cmap(color_scale_factor))
+    plt.xlabel('Distance from Gaussian Center')
+    plt.ylabel('Magnitude of Felt Gaussian')
+    plt.title('Distance From Gaussian Center vs. Felt Gaussian, Shown for Many Iterations')
     plt.legend()
     plt.show()
-    plt.plot(LJGrad_values, label='LJ grad potential')
+
+def analyze_iter_gauss(Gauss_v_dist_values):
+    num_iters = len(Gauss_v_dist_values)
+    cmap = colormaps.get_cmap('hsv')
+    num_gaussians = len(Gauss_v_dist_values[-1][0])
+    data = []
+    for i in range(num_gaussians):
+        this_gaussian_data = [[], []]
+        for j in range(i, num_iters):
+            if len(Gauss_v_dist_values[j][1]) > i:
+                this_gaussian_data[0].append(j)
+                # print(f'i: {i}, j: {j}, len(Gauss_v_dist_values[j][1]: {len(Gauss_v_dist_values[j][1])}')
+                # print(Gauss_v_dist_values[j])
+                # print(Gauss_v_dist_values[j][1])
+                # print(Gauss_v_dist_values[j][1][i])
+                this_gaussian_data[1].append(Gauss_v_dist_values[j][1][i])
+        data.append(this_gaussian_data)
+    
+    for i in range(num_gaussians):
+        i = num_gaussians - i - 1
+        color_scale_factor = float(i) / num_gaussians
+        if i == 0:
+            plt.plot(data[i][0], data[i][1], c=cmap(color_scale_factor), label='Gaussian 1')
+        elif i == num_gaussians - 1:
+            plt.plot(data[i][0], data[i][1], c=cmap(color_scale_factor), label=f'Gaussian {num_gaussians}')
+        else:
+            plt.plot(data[i][0], data[i][1], c=cmap(color_scale_factor))
+    plt.xlabel('Iteration')
+    plt.ylabel('Magnitude of Felt Gaussian')
+    plt.title('Iteration vs. Felt Gaussian, For Each Gaussian')
+    plt.legend()
+    plt.show()
+
+def analyze_LJ_potential(LJ_values, LJGrad_values, Gauss_values, GaussGrad_values, LJ_Gauss_values, LJGrad_GaussGrad_values):
+    plt.plot(LJ_values, label='LJ potential')
+    # plt.legend()
+    # plt.show()
+    # plt.plot(LJGrad_values, label='LJ grad potential')
+    # plt.legend()
+    # plt.show()
+    plt.plot(LJ_Gauss_values, label='potential + bias')
     plt.legend()
     plt.show()
     plt.plot(Gauss_values, label='bias')
     plt.legend()
     plt.show()
-    plt.plot(GaussGrad_values, label='grad bias')
-    plt.legend()
-    plt.show()
-    plt.plot(LJ_Gauss_values, label='potential + bias')
-    plt.legend()
-    plt.show()
-    plt.plot(LJGrad_GaussGrad_values, label='grad potential + grad bias')
-    plt.legend()
+    # plt.plot(GaussGrad_values, label='grad bias')
+    # plt.legend()
+    # plt.show()
+    # plt.plot(LJGrad_GaussGrad_values, label='grad potential + grad bias')
+    # plt.legend()
+    # plt.show()
+
+def torsion(xyzs, i, j, k):
+    # compute the torsion angle for atoms i,j,k
+    ibeg = (i - 1) * 3
+    iend = i * 3
+    jbeg = (j - 1) * 3
+    jend = j * 3
+    kbeg = (k - 1) * 3
+    kend = k * 3
+
+    rij = xyzs[ibeg:iend] - xyzs[jbeg:jend]
+    rkj = xyzs[kbeg:kend] - xyzs[jbeg:jend]
+    cost = np.sum(rij * rkj)
+    sint = np.linalg.norm(np.cross(rij, rkj))
+    angle = np.arctan2(sint, cost)
+    return angle
+
+def cart2zmat(X):
+    X = X.T
+    nrows, ncols = X.shape
+    na = nrows // 3
+    print(f'na: {na}')
+    Z = []
+
+    for j in range(ncols):
+        rlist = []  # list of bond lengths
+        alist = []  # list of bond angles (radian)
+        dlist = []  # list of dihedral angles (radian)
+        # calculate the distance matrix between atoms
+        distmat = np.zeros((na, na))
+        for jb in range(na):
+            jbeg = jb * 3
+            jend = (jb + 1) * 3
+            xyzb = X[jbeg:jend, j]
+            for ia in range(jb + 1, na):
+                ibeg = ia * 3
+                iend = (ia + 1) * 3
+                xyza = X[ibeg:iend, j]
+                distmat[ia, jb] = np.linalg.norm(xyza - xyzb)
+        distmat = distmat + np.transpose(distmat)
+
+        if na > 1:
+            rlist.append(distmat[0, 1])
+
+        if na > 2:
+            rlist.append(distmat[0, 2])
+            alist.append(torsion(X[:, j], 3, 1, 2))
+
+        Z.append(rlist + alist + dlist)
+
+    Z = np.array(Z)
+    return Z.T
+
+def show_trajectory_plot(r_values, LJ_values, Gauss_values):
+    # all_potential_values = [LJpotential(np.array([r_values[i]])) for i in range(len(r_values))]
+
+    print(f'r_values.shape: {r_values.shape}')
+    print(f'LJ_values.shape: {LJ_values.shape}')
+    print(f'Gauss_values.shape: {Gauss_values.shape}')
+
+    all_z_values = cart2zmat(r_values)
+
+    num_iters = len(r_values)
+    
+    iter_fractions = [float(i) / num_iters for i in range(num_iters)]
+    
+    min_potential = min(LJ_values)
+    max_potential = max(LJ_values)
+    energy_fractions = [(LJ_values[i] - min_potential) / (max_potential - min_potential) for i in range(num_iters)]
+
+    min_bias = min(Gauss_values)
+    max_bias = max(Gauss_values)
+    bias_fractions = [(Gauss_values[i] - min_bias) / (max_bias - min_bias) for i in range(num_iters)]
+
+    # Create a 3D plot
+    cmap = plt.get_cmap('plasma')
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    # ax.scatter(z_trajectory[:, 0], z_trajectory[:, 1], z_trajectory[:, 2], c=indices, cmap=cmap)
+    traj_plot = ax.scatter(all_z_values[0, :], all_z_values[1, :], all_z_values[2, :], c=energy_fractions, cmap=cmap)
+    traj_colorbar = plt.colorbar(traj_plot)
+    traj_colorbar.set_label(f'Potential with max {max_potential:.3f} and min {min_potential:.3f}')
     plt.show()
 
+    # Create a 3D plot
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection='3d')
+    # ax.scatter(z_trajectory[:, 0], z_trajectory[:, 1], z_trajectory[:, 2], c=indices, cmap=cmap)
+    traj_plot = ax.scatter(all_z_values[0, :], all_z_values[1, :], all_z_values[2, :], c=bias_fractions, cmap=cmap)
+    traj_colorbar = plt.colorbar(traj_plot)
+    traj_colorbar.set_label(f'Potential with max {max_bias:.3f} and min {min_bias:.3f}')
+    plt.show()
+
+
+
+    # # the below would only work for a 2d potential...
+    # xx = np.linspace(-2, 2, 100)
+    # yy = np.linspace(-1, 2, 100)
+    # [X, Y] = np.meshgrid(xx, yy)  # 100*100
+    # # W = LJpotential(X, Y)
+    # W = np.zeros((len(xx), len(yy)))
+    # for i in range(len(xx)):
+    #     for j in range(len(yy)):
+    #         W[i][j] = LJpotential(xx[i], yy[j])
+
 M = 30  # M = 30 for 10 atoms, each with 3 dimensions
-# T = 20
-T = 1
+M = 9
+T = 20
+# T = 1
 Tdeposite = 0.05    # time until place gaussian
 dt = 0.001
-h = 0.1         # height
-sigma = 0.1     # stdev
+h = 1
+sigma = 1
+# h = 0.1         # height
+# sigma = 0.1     # stdev
 kbT = 0.01
+
+ten_atom_init = [   [-0.112678561569957,   1.154350068036701,  -0.194840194577019],
+                    [0.455529927957375,  -0.141698933988423,   1.074987039970359],
+                    [-1.076845089999501,  -0.472850203002737,  -0.000759561321676],
+                    [0.772283646029137,   0.650565133523509,   0.318426126854726],
+                    [-0.156611774846419,  -0.917108951862921,   0.505406908904027],
+                    [-0.704034080497556,   0.331528029107990,  -0.717967548406147],
+                    [0.749396644213383,  -0.438279561655135,   0.048302291736783],
+                    [-0.145155893839899,  -0.631595300103604,  -0.579684879295956],
+                    [0.417694325594403,   0.318313250559209,  -0.692983073948749],
+                    [-0.199579143040966,   0.146776469285409,   0.239112890083651]]
+
+three_atom_init = [ [0.4391356726,        0.1106588251,       -0.4635601962],
+                    [-0.5185079933,        0.3850176090,        0.0537084789],
+                    [0.0793723207,       -0.4956764341,        0.4098517173]]
 
 LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT)
 

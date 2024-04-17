@@ -1,6 +1,8 @@
+import time
 from matplotlib import pyplot as plt
 import numpy as np
 import scipy
+import tensorflow as tf
 from tqdm import tqdm
 
 from matplotlib import colormaps
@@ -87,66 +89,34 @@ def GradGuassian(x, centers, eigenvectors, h, sigma):
     # x: 1 * M
     # centers: N * M
     # eigenvectors: N * M * k
-    env_sigma = sigma / 10.
+    env_sigma = sigma
     k = eigenvectors.shape[-1]
 
     x_minus_centers = x - centers # N * M
-
-    # don't use this prob
-    # x_distance = np.linalg.norm(x_minus_centers, axis=1)   # want N * 1 from the N * M
-
-    # this is wrong
-    # envelope_exps = (1/env_sigma**2)*np.exp(-np.expand_dims(x_distance, axis=1)/2/env_sigma**2)   # want N * 1
-    # print(f'grad envelope_exps: {envelope_exps.shape}')
-
     x_minus_centers = np.expand_dims(x_minus_centers, axis=1) # N * 1 * M
     x_projected = np.matmul(x_minus_centers, eigenvectors) # N * 1 * k          # dot product with evecs. (N * 1 * M) * (N * M * k) = (N * 1 * k)
     x_projected_sq_sum = np.sum(x_projected**2, axis=(-2, -1)) # N
+    exps = h*np.exp(-np.expand_dims(x_projected_sq_sum, axis=1)/2/sigma**2) # N * 1
 
-    # print(f'x_minus_centers.shape: {x_minus_centers.shape}')
-    # print(f'eigenvectors.shape: {eigenvectors.shape}')  # N * M * k
     eigenvectors_orth = np.array([scipy.linalg.orth(eigenvectors[i]) for i in range(len(eigenvectors))]) # N * M * k
-    # print(f'eigenvectors_orth.shape: {eigenvectors_orth.shape}')
-    x_projected_orth_dists = np.matmul(x_minus_centers, eigenvectors_orth)  # N * 1 * k??
-    # print(f'x_projected_orth_dists.shape: {x_projected_orth_dists.shape}')
     x_projected_orth = np.matmul(x_minus_centers, eigenvectors_orth) * eigenvectors_orth    # N * M * k
-    # print(f'x_projected_orth.shape: {x_projected_orth.shape}')
+    x_minus_centers_expanded = np.tile(np.squeeze(x_minus_centers, axis=1)[:, :, np.newaxis], (1, 1, k)) # N * M * k
+    envelope_eigenvectors = x_minus_centers_expanded - x_projected_orth      # N * M * k
+    envelope_eigenvectors = np.array([scipy.linalg.orth(envelope_eigenvectors[i]) for i in range(len(envelope_eigenvectors))]) # N * M * k
+    x_projected_envelope = np.matmul(x_minus_centers, envelope_eigenvectors) # N * 1 * k
+    x_envelope_sq_sum = np.sum(x_projected_envelope**2, axis=(-2, -1))   # N
+    envelope_exps = h*np.exp(-np.expand_dims(x_envelope_sq_sum, axis=1)/2/env_sigma**2) # N * 1
 
-    # x_projected_orth_sum = np.expand_dims(np.sum(x_projected_orth, axis=-1), axis=1)    # N * M
-    # print(f'x_projected_orth_sum.shape: {x_projected_orth_sum.shape}')
-
-    x_minus_centers_expanded = np.tile(np.squeeze(x_minus_centers, axis=1)[:, :, np.newaxis], (1, 1, k))
-    # print(f'x_minus_centers_expanded.shape: {x_minus_centers_expanded.shape}')
-    x_envelope = x_minus_centers_expanded - x_projected_orth      # N * M * k
-    # print(f'x_envelope.shape: {x_envelope.shape}')
-    x_envelope_sq_sum = np.sum(x_envelope**2, axis=(-2, -1))   # N
-    # print(f'x_envelope_sq_sum.shape: {x_envelope_sq_sum.shape}')
-
-    # TEST whether it is orthogonal
-    # print(np.einsum('nmk,nmk->n', x_projected_orth, x_envelope))
-
-    exps = -h*np.exp(-np.expand_dims(x_projected_sq_sum, axis=1)/2/sigma**2) # N * 1
-
-    envelope_exps = -h*np.exp(-np.expand_dims(x_envelope_sq_sum, axis=1)/2/env_sigma**2) # N * 1
-
-    # print(f'exps: {exps.shape}')
     exps = exps * envelope_exps # still N * 1 ideally
-    # print(f'exps.shape: {exps.shape}')
-
-    # TODO: properly calculate the derivative!
 
     PTPx = np.matmul(eigenvectors, np.transpose(x_projected, axes=(0,2,1))) # N * M * 1
     PTPx = np.squeeze(PTPx, axis=2) # N * M
 
-    # print(f'x_projected.shape: {x_projected.shape}')
-    # print(f'x_envelope_dists.shape: {x_projected_orth_dists.shape}')
-
-    PTPx_envelope = np.matmul(eigenvectors, np.transpose(x_projected_orth_dists, axes=(0,2,1))) # N * M * 1
-    # print(f'PTPx_envelope.shape: {PTPx_envelope.shape}')
+    # THIS IS INCORRECT
+    PTPx_envelope = np.matmul(envelope_eigenvectors, np.transpose(x_projected_envelope, axes=(0,2,1))) # N * M * 1
     PTPx_envelope = np.squeeze(PTPx_envelope, axis=2) # N * M
-    # print(f'PTPx_envelope.shape: {PTPx_envelope.shape}')
 
-    grad = np.sum(exps * (PTPx / sigma**2 + PTPx_envelope / env_sigma**2), axis=0, keepdims=True) # 1 * M
+    grad = np.sum(-exps * (PTPx / sigma**2 + PTPx_envelope / env_sigma**2), axis=0, keepdims=True) # 1 * M
 
     return grad
 
@@ -157,56 +127,40 @@ def GradEnvGuassian(x, centers, eigenvectors, h, sigma):
     # x: 1 * M
     # centers: N * M
     # eigenvectors: N * M * k
-    env_sigma = sigma / 10.
+
+    env_sigma = sigma
     k = eigenvectors.shape[-1]
 
-    x_minus_centers = x - centers # N * M
+    x_minus_centers_original = x - centers # N * M
 
-    # don't use this prob
-    # x_distance = np.linalg.norm(x_minus_centers, axis=1)   # want N * 1 from the N * M
+    x_minus_centers = np.expand_dims(x_minus_centers_original, axis=1) # N * 1 * M
 
-    # this is wrong
-    # envelope_exps = (1/env_sigma**2)*np.exp(-np.expand_dims(x_distance, axis=1)/2/env_sigma**2)   # want N * 1
-    # print(f'grad envelope_exps: {envelope_exps.shape}')
-
-    x_minus_centers = np.expand_dims(x_minus_centers, axis=1) # N * 1 * M
-    x_projected = np.matmul(x_minus_centers, eigenvectors) # N * 1 * k          # dot product with evecs. (N * 1 * M) * (N * M * k) = (N * 1 * k)
-    x_projected_sq_sum = np.sum(x_projected**2, axis=(-2, -1)) # N
-
-    # print(f'x_minus_centers.shape: {x_minus_centers.shape}')
-    # print(f'eigenvectors.shape: {eigenvectors.shape}')  # N * M * k
     eigenvectors_orth = np.array([scipy.linalg.orth(eigenvectors[i]) for i in range(len(eigenvectors))]) # N * M * k
-    # print(f'eigenvectors_orth.shape: {eigenvectors_orth.shape}')
-    x_projected_orth_dists = np.matmul(x_minus_centers, eigenvectors_orth)  # N * 1 * k??
-    # print(f'x_projected_orth_dists.shape: {x_projected_orth_dists.shape}')
     x_projected_orth = np.matmul(x_minus_centers, eigenvectors_orth) * eigenvectors_orth    # N * M * k
-    # print(f'x_projected_orth.shape: {x_projected_orth.shape}')
+    x_minus_centers_expanded = np.tile(np.squeeze(x_minus_centers, axis=1)[:, :, np.newaxis], (1, 1, k)) # N * M * k
+    envelope_eigenvectors = x_minus_centers_expanded - x_projected_orth      # N * M * k
+    envelope_eigenvectors = np.array([scipy.linalg.orth(envelope_eigenvectors[i]) for i in range(len(envelope_eigenvectors))]) # N * M * k
+    x_projected_envelope = np.matmul(x_minus_centers, envelope_eigenvectors) # N * 1 * k
+    x_envelope_sq_sum = np.sum(x_projected_envelope**2, axis=(-2, -1))   # N
 
-    # x_projected_orth_sum = np.expand_dims(np.sum(x_projected_orth, axis=-1), axis=1)    # N * M
-    # print(f'x_projected_orth_sum.shape: {x_projected_orth_sum.shape}')
+    x_projected_sum = np.sum(x_projected_orth, axis=-1) # N * M
+    x_remainder = x_minus_centers - x_projected_sum     # N * M
+    envelope_exps = -h*np.exp(-np.expand_dims(x_remainder, axis=1)/2/env_sigma**2) # N * 1
 
-    x_minus_centers_expanded = np.tile(np.squeeze(x_minus_centers, axis=1)[:, :, np.newaxis], (1, 1, k))
-    # print(f'x_minus_centers_expanded.shape: {x_minus_centers_expanded.shape}')
-    x_envelope = x_minus_centers_expanded - x_projected_orth      # N * M * k
-    # print(f'x_envelope.shape: {x_envelope.shape}')
-    x_envelope_sq_sum = np.sum(x_envelope**2, axis=(-2, -1))   # N
-    # print(f'x_envelope_sq_sum.shape: {x_envelope_sq_sum.shape}')
-
-    # TEST whether it is orthogonal
-    # print(np.einsum('nmk,nmk->n', x_projected_orth, x_envelope))
-
-    envelope_exps = -h*np.exp(-np.expand_dims(x_envelope_sq_sum, axis=1)/2/env_sigma**2) # N * 1
-
-
-    # print(f'x_projected.shape: {x_projected.shape}')
-    # print(f'x_envelope_dists.shape: {x_projected_orth_dists.shape}')
-
-    PTPx_envelope = np.matmul(eigenvectors, np.transpose(x_projected_orth_dists, axes=(0,2,1))) # N * M * 1
-    # print(f'PTPx_envelope.shape: {PTPx_envelope.shape}')
+    PTPx_envelope = np.matmul(envelope_eigenvectors, np.transpose(x_projected_envelope, axes=(0,2,1))) # N * M * 1
     PTPx_envelope = np.squeeze(PTPx_envelope, axis=2) # N * M
-    # print(f'PTPx_envelope.shape: {PTPx_envelope.shape}')
 
     grad = np.sum(envelope_exps * PTPx_envelope / env_sigma**2, axis=0, keepdims=True) # 1 * M
+
+    # TODO: new way??
+    x_projected_sum = np.sum(x_projected_orth, axis=-1) # N * M
+    # print(f'x_projected_sum.shape: {x_projected_sum.shape}')
+    x_remainder = x_minus_centers_original - x_projected_sum     # N * M
+    # print(f'x_remainder.shape: {x_remainder.shape}')
+
+    x_envelope_sq_sum = np.sum(x_remainder**2, axis=-1)   # N * M -> N
+    envelope_exps = h*np.exp(-np.expand_dims(x_envelope_sq_sum, axis=1)/2/env_sigma**2) # N * 1
+
 
     return grad
 
@@ -214,12 +168,13 @@ def SumGuassian(x, centers, eigenvectors, h, sigma):
     # x: 1 * M
     # centers: N * M
     # eigenvectors: N * M * k
-    env_sigma = sigma / 10.
+    env_sigma = sigma
     k = eigenvectors.shape[-1]
+    # M = eigenvectors.shape[-2]
 
     # Gaussian in the direction of the CVs
-    x_minus_centers = x - centers # N * M
-    x_minus_centers = np.expand_dims(x_minus_centers, axis=1) # N * 1 * M
+    x_minus_centers_original = x - centers # N * M
+    x_minus_centers = np.expand_dims(x_minus_centers_original, axis=1) # N * 1 * M
     x_projected = np.matmul(x_minus_centers, eigenvectors) # N * 1 * k
     x_projected_sq_sum = np.sum(x_projected**2, axis=(-2, -1)) # N
     exps = h*np.exp(-np.expand_dims(x_projected_sq_sum, axis=1)/2/sigma**2) # N * 1
@@ -227,10 +182,20 @@ def SumGuassian(x, centers, eigenvectors, h, sigma):
     # Gaussian in the directions orthogonal to the CVs
     eigenvectors_orth = np.array([scipy.linalg.orth(eigenvectors[i]) for i in range(len(eigenvectors))]) # N * M * k
     x_projected_orth = np.matmul(x_minus_centers, eigenvectors_orth) * eigenvectors_orth    # N * M * k
-    x_minus_centers_expanded = np.tile(np.squeeze(x_minus_centers, axis=1)[:, :, np.newaxis], (1, 1, k)) # N * M * k
-    x_envelope = x_minus_centers_expanded - x_projected_orth      # N * M * k
-    x_envelope_sq_sum = np.sum(x_envelope**2, axis=(-2, -1))   # N
-    envelope_exps = np.exp(-np.expand_dims(x_envelope_sq_sum, axis=1)/2/env_sigma**2) # N * 1
+
+    x_projected_sum = np.sum(x_projected_orth, axis=-1) # N * M
+    x_remainder = x_minus_centers_original - x_projected_sum     # N * M
+
+    # OLD incorrect
+    # x_minus_centers_expanded = np.tile(np.squeeze(x_minus_centers, axis=1)[:, :, np.newaxis], (1, 1, k)) # N * M * k
+    # envelope_eigenvectors = x_minus_centers_expanded - x_projected_orth      # N * M * k
+    # envelope_eigenvectors = np.array([scipy.linalg.orth(envelope_eigenvectors[i]) for i in range(len(envelope_eigenvectors))]) # N * M * k
+    # x_projected_envelope = np.matmul(x_minus_centers, envelope_eigenvectors) # N * 1 * k
+    # x_envelope_sq_sum = np.sum(x_projected_envelope**2, axis=(-1,-2))   # N * M -> N for some reason
+
+    x_envelope_sq_sum = np.sum(x_remainder**2, axis=-1)   # N * M -> N
+
+    envelope_exps = h*np.exp(-np.expand_dims(x_envelope_sq_sum, axis=1)/2/env_sigma**2) # N * 1
 
     # Combine the Gaussians
     exps = exps * envelope_exps
@@ -245,27 +210,66 @@ def SumGuassian(x, centers, eigenvectors, h, sigma):
 
     return total_bias
 
+def SumGuassianTF(x, centers, eigenvectors, h, sigma):
+    # x: 1 * M
+    # centers: N * M
+    # eigenvectors: N * M * k
+
+    env_sigma = sigma
+
+    # Convert NumPy arrays to TensorFlow tensors
+    x_tensor = tf.constant(x)
+    centers_tensor = tf.constant(centers)
+    eigenvectors_tensor = tf.constant(eigenvectors)
+
+    # Gaussian in the direction of the CVs
+    x_minus_centers = x_tensor - centers_tensor  # N * M
+    x_minus_centers_expanded = tf.expand_dims(x_minus_centers, axis=1)  # N * 1 * M
+    x_projected = tf.matmul(x_minus_centers_expanded, eigenvectors_tensor)  # N * 1 * k
+    x_projected_sq_sum = tf.reduce_sum(x_projected ** 2, axis=(-2, -1))  # N
+    exps = h * tf.exp(-tf.expand_dims(x_projected_sq_sum, axis=1) / (2 * sigma ** 2))  # N * 1
+
+    # Gaussian in the directions orthogonal to the CVs
+    eigenvectors_orth = tf.convert_to_tensor([scipy.linalg.orth(eigenvectors[i]) for i in range(len(eigenvectors))]) # N * M * k
+    x_projected_orth = tf.matmul(x_minus_centers_expanded, eigenvectors_orth) * eigenvectors_orth  # N * M * k
+    x_minus_centers_expanded_tiled = tf.tile(tf.expand_dims(x_minus_centers, axis=-1), [1, 1, k])  # N * M * k
+    envelope_eigenvectors = x_minus_centers_expanded_tiled - x_projected_orth  # N * M * k
+    envelope_eigenvectors = tf.convert_to_tensor([scipy.linalg.orth(envelope_eigenvectors[i]) for i in range(len(envelope_eigenvectors))]) # N * M * k
+    x_projected_envelope = tf.matmul(x_minus_centers_expanded, envelope_eigenvectors)  # N * 1 * k
+
+    # OLD WAY
+    x_envelope_sq_sum = tf.reduce_sum(x_projected_envelope ** 2, axis=(-2, -1))  # N
+
+    # NEW WAY
+    x_projected_sum = tf.reduce_sum(x_projected_orth, axis=-1) # N * M
+    x_remainder = x_minus_centers - x_projected_sum     # N * M
+    x_envelope_sq_sum = tf.reduce_sum(x_remainder**2, axis=-1)   # N * M -> N
+
+    envelope_exps = h * tf.exp(-tf.expand_dims(x_envelope_sq_sum, axis=1) / (2 * env_sigma ** 2))  # N * 1
+    total_bias = tf.reduce_sum(envelope_exps * exps, axis=0, keepdims=True)  # 1 * M
+
+    return total_bias
+
 def SumEnvGuassian(x, centers, eigenvectors, h, sigma):
     # x: 1 * M
     # centers: N * M
     # eigenvectors: N * M * k
-    env_sigma = sigma / 10.
+    env_sigma = sigma
     k = eigenvectors.shape[-1]
 
-    # Gaussian in the direction of the CVs
     x_minus_centers = x - centers # N * M
     x_minus_centers = np.expand_dims(x_minus_centers, axis=1) # N * 1 * M
-    x_projected = np.matmul(x_minus_centers, eigenvectors) # N * 1 * k
-    x_projected_sq_sum = np.sum(x_projected**2, axis=(-2, -1)) # N
-    exps = h*np.exp(-np.expand_dims(x_projected_sq_sum, axis=1)/2/sigma**2) # N * 1
 
+    # THIS IS INCORRECT
     # Gaussian in the directions orthogonal to the CVs
     eigenvectors_orth = np.array([scipy.linalg.orth(eigenvectors[i]) for i in range(len(eigenvectors))]) # N * M * k
     x_projected_orth = np.matmul(x_minus_centers, eigenvectors_orth) * eigenvectors_orth    # N * M * k
     x_minus_centers_expanded = np.tile(np.squeeze(x_minus_centers, axis=1)[:, :, np.newaxis], (1, 1, k)) # N * M * k
-    x_envelope = x_minus_centers_expanded - x_projected_orth      # N * M * k
-    x_envelope_sq_sum = np.sum(x_envelope**2, axis=(-2, -1))   # N
-    envelope_exps = np.exp(-np.expand_dims(x_envelope_sq_sum, axis=1)/2/env_sigma**2) # N * 1
+    envelope_eigenvectors = x_minus_centers_expanded - x_projected_orth      # N * M * k
+    envelope_eigenvectors = np.array([scipy.linalg.orth(envelope_eigenvectors[i]) for i in range(len(envelope_eigenvectors))]) # N * M * k
+    x_projected_envelope = np.matmul(x_minus_centers, envelope_eigenvectors) # N * 1 * k
+    x_envelope_sq_sum = np.sum(x_projected_envelope**2, axis=(-2, -1))   # N
+    envelope_exps = h*np.exp(-np.expand_dims(x_envelope_sq_sum, axis=1)/2/env_sigma**2) # N * 1
 
     total_bias = np.sum(envelope_exps, axis=0, keepdims=True) # 1 * M
 
@@ -277,6 +281,38 @@ def SumEnvGuassian(x, centers, eigenvectors, h, sigma):
 
     return total_bias
 
+def SumEnvGuassianTF(x, centers, eigenvectors, h, sigma):
+    # x: 1 * M
+    # centers: N * M
+    # eigenvectors: N * M * k
+    env_sigma = sigma
+    k = eigenvectors.shape[-1]
+
+    # Convert NumPy arrays to TensorFlow tensors
+    x_tensor = tf.constant(x)
+    centers_tensor = tf.constant(centers)
+    eigenvectors_tensor = tf.constant(eigenvectors)
+
+    # Gaussian in the direction of the CVs
+    x_minus_centers = x_tensor - centers_tensor  # N * M
+    x_minus_centers_expanded = tf.expand_dims(x_minus_centers, axis=1)  # N * 1 * M
+
+    # Gaussian in the directions orthogonal to the CVs
+    # THIS IS INCORRECT
+    eigenvectors_orth = tf.convert_to_tensor([scipy.linalg.orth(eigenvectors[i]) for i in range(len(eigenvectors))]) # N * M * k
+    x_projected_orth = tf.matmul(x_minus_centers_expanded, eigenvectors_orth) * eigenvectors_orth  # N * M * k
+    x_minus_centers_expanded_tiled = tf.tile(tf.expand_dims(x_minus_centers, axis=-1), [1, 1, k])  # N * M * k
+    envelope_eigenvectors = x_minus_centers_expanded_tiled - x_projected_orth  # N * M * k
+    envelope_eigenvectors = tf.convert_to_tensor([scipy.linalg.orth(envelope_eigenvectors[i]) for i in range(len(envelope_eigenvectors))]) # N * M * k
+    x_projected_envelope = tf.matmul(x_minus_centers_expanded, envelope_eigenvectors)  # N * 1 * k
+    x_envelope_sq_sum = tf.reduce_sum(x_projected_envelope ** 2, axis=(-2, -1))  # N
+    envelope_exps = h * tf.exp(-tf.expand_dims(x_envelope_sq_sum, axis=1) / (2 * env_sigma ** 2))  # N * 1
+
+    total_bias = tf.reduce_sum(envelope_exps, axis=0, keepdims=True)  # 1 * M
+
+    return total_bias
+
+# TODO: fix this function to have correct envelopes
 def DistSumGuassian(x, centers, eigenvectors, h, sigma):
     # x: 1 * M
     # centers: N * M
@@ -295,6 +331,7 @@ def DistSumGuassian(x, centers, eigenvectors, h, sigma):
     exps = h*np.exp(-np.expand_dims(x_projected_sq_sum, axis=1)/2/sigma**2) # N * 1
 
     # Gaussian in the directions orthogonal to the CVs
+    # THIS IS INCORRECT
     eigenvectors_orth = np.array([scipy.linalg.orth(eigenvectors[i]) for i in range(len(eigenvectors))]) # N * M * k
     x_projected_orth = np.matmul(x_minus_centers, eigenvectors_orth) * eigenvectors_orth    # N * M * k
     x_minus_centers_expanded = np.tile(np.squeeze(x_minus_centers, axis=1)[:, :, np.newaxis], (1, 1, k)) # N * M * k
@@ -619,8 +656,8 @@ def show_trajectory_plot(r_values, LJ_values, Gauss_values):
 
 M = 30  # M = 30 for 10 atoms, each with 3 dimensions
 M = 9
-T = 20
-# T = 1
+# T = 20
+T = 1
 Tdeposite = 0.05    # time until place gaussian
 dt = 0.001
 h = 1
@@ -646,25 +683,64 @@ three_atom_init = [ [0.4391356726,        0.1106588251,       -0.4635601962],
 
 # LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT)
 
-N = 5
-M = 7
-k = 2
+N = 1
+M = 2
+k = 1
 h = 0.1
 sigma = 0.2
 
 h = 10
 sigma = 10
 
+N = 5
+M = 7
+k = 2
+# h = 0.1
+# sigma = 0.4
+
 x = np.random.rand(1, M)
 centers = np.random.rand(N, M)
 eigenvectors = np.random.rand(N, M, k)
+# x = np.array([[1.,1.]])
+# centers = np.array([[0.,0.]])
+# eigenvectors = np.array([[[0.],[1.]]])
+
+
+# xx = np.linspace(-.5, .5, 100)
+# yy = np.linspace(-.5, .5, 100)
+# [X, Y] = np.meshgrid(xx, yy)  # 100*100
+# W = np.array([[SumGuassian([X[i][j], Y[i][j]], centers, eigenvectors, h, sigma)[0][0] for j in range(100)] for i in range(100)])
+# print(W.shape)
+# fig = plt.figure(figsize=(10,6))
+# ax1 = fig.add_subplot(1, 1, 1)
+# contourf_ = ax1.contourf(X, Y, W, levels=29)
+# plt.colorbar(contourf_)
+# plt.show()
+
+print('Full')
 print(GradGuassian(x, centers, eigenvectors, h, sigma))
 for i in range(M):
     shift = 0.0001
     e=np.zeros((1,M))
     e[0, i]= shift
     print((SumGuassian(x+e, centers, eigenvectors, h, sigma)-SumGuassian(x, centers, eigenvectors, h, sigma))/shift)
+
+x_value = tf.constant(x)
+with tf.GradientTape() as tape:
+    tape.watch(x_value)
+    y = tf.constant(SumGuassianTF(x_value, centers, eigenvectors, h, sigma))
+dy_dx = tape.gradient(y, x_value)
+print(dy_dx)
+
+print('Envelope')
 print(GradEnvGuassian(x, centers, eigenvectors, h, sigma))
+x_value = tf.constant(x)
+with tf.GradientTape() as tape:
+    tape.watch(x_value)
+    y = tf.constant(SumEnvGuassianTF(x_value, centers, eigenvectors, h, sigma))
+dy_dx = tape.gradient(y, x_value)
+print(dy_dx)
+
 for i in range(M):
     shift = 0.0001
     e=np.zeros((1,M))

@@ -1,8 +1,15 @@
 import time
 from matplotlib import pyplot as plt
 import numpy as np
+import numpy.linalg as la
 import scipy
+import jax
+import jax.numpy as jnp
+import jax.scipy as jscipy
 import tensorflow as tf
+from tensorflow.keras import Sequential
+from tensorflow.keras.layers import Input, Dense
+from tensorflow.keras.models import Model
 from tqdm import tqdm
 
 from matplotlib import colormaps
@@ -60,6 +67,7 @@ def PCA(data):  # datasize: N * dim
     data_z = data  # bs*3
 
     mean_vector = np.mean(data_z, axis=0, keepdims=True)
+    std_vector = np.std(data_z, axis=0, keepdims=True)
 
     # Step 4.2: Center the data by subtracting the mean
     centered_data = (data_z - mean_vector)
@@ -72,6 +80,7 @@ def PCA(data):  # datasize: N * dim
 
     # Step 4.5: Sort the eigenvectors based on eigenvalues (descending order)
     sorted_indices = np.argsort(eigenvalues)[::-1]
+    eigenvalues = eigenvalues[sorted_indices]
     eigenvectors = eigenvectors[:, sorted_indices]
 
     # Step 4.6: Choose the number of components (optional)
@@ -81,96 +90,101 @@ def PCA(data):  # datasize: N * dim
     selected_eigenvectors = eigenvectors[:, 0:k]
 
     return mean_vector, selected_eigenvectors
+    # return mean_vector, std_vector, selected_eigenvectors, eigenvalues
 
-def GradGuassian(x, centers, eigenvectors, h, sigma):
-    # M = number of dimensions: 3 * number of atoms
-    # N = number of centers 
-    # k = number of CVs
-    # x: 1 * M
-    # centers: N * M
-    # eigenvectors: N * M * k
-    env_sigma = sigma
-    k = eigenvectors.shape[-1]
+def AE(data):
+    mean_vector = np.mean(data, axis=0, keepdims=True)
+    std_vector = np.std(data, axis=0, keepdims=True)
+    
+    input_dim = data.shape[1]
+    print(f'input dim: {input_dim}')
+    encoding_dim = 3 # Set the desired encoding dimension
+    intermediate_dim = 64 # Set the width of the intermediate layer
 
-    x_minus_centers = x - centers # N * M
-    x_minus_centers = np.expand_dims(x_minus_centers, axis=1) # N * 1 * M
-    x_projected = np.matmul(x_minus_centers, eigenvectors) # N * 1 * k          # dot product with evecs. (N * 1 * M) * (N * M * k) = (N * 1 * k)
-    x_projected_sq_sum = np.sum(x_projected**2, axis=(-2, -1)) # N
-    exps = h*np.exp(-np.expand_dims(x_projected_sq_sum, axis=1)/2/sigma**2) # N * 1
+    # Define the Autoencoder architecture
+    input_layer = Input(shape=(input_dim,))
+    encoder = Sequential([Dense(intermediate_dim, activation='relu'),
+                        Dense(intermediate_dim, activation='relu'),
+                        Dense(encoding_dim)])
+    encoded = encoder(input_layer)
+    decoder = Sequential([Dense(intermediate_dim, activation='relu'),
+                        Dense(intermediate_dim, activation='relu'),
+                        Dense(input_dim)])
+    # NOTE: the absolute value is an important aspect of the decoder
+    decoded = tf.math.abs(decoder(encoded))
 
-    eigenvectors_orth = np.array([scipy.linalg.orth(eigenvectors[i]) for i in range(len(eigenvectors))]) # N * M * k
-    x_projected_orth = np.matmul(x_minus_centers, eigenvectors_orth) * eigenvectors_orth    # N * M * k
-    x_minus_centers_expanded = np.tile(np.squeeze(x_minus_centers, axis=1)[:, :, np.newaxis], (1, 1, k)) # N * M * k
-    envelope_eigenvectors = x_minus_centers_expanded - x_projected_orth      # N * M * k
-    envelope_eigenvectors = np.array([scipy.linalg.orth(envelope_eigenvectors[i]) for i in range(len(envelope_eigenvectors))]) # N * M * k
-    x_projected_envelope = np.matmul(x_minus_centers, envelope_eigenvectors) # N * 1 * k
-    x_envelope_sq_sum = np.sum(x_projected_envelope**2, axis=(-2, -1))   # N
-    envelope_exps = h*np.exp(-np.expand_dims(x_envelope_sq_sum, axis=1)/2/env_sigma**2) # N * 1
+    autoencoder = Model(input_layer, decoded)
+    autoencoder.compile(optimizer='adam', loss='mse')
 
-    exps = exps * envelope_exps # still N * 1 ideally
+    # Train the Autoencoder
+    autoencoder.fit(data, data, epochs=300, batch_size=32, shuffle=True, validation_split=0.2)
+    
+    # Get out base vectors to plot
+    base_vectors = np.identity(input_dim)
+    encoded_base_vectors = encoder.predict(base_vectors)
 
-    PTPx = np.matmul(eigenvectors, np.transpose(x_projected, axes=(0,2,1))) # N * M * 1
-    PTPx = np.squeeze(PTPx, axis=2) # N * M
+    ae_comps = encoded_base_vectors.T[:,0:input_dim]
 
-    # THIS IS INCORRECT
-    PTPx_envelope = np.matmul(envelope_eigenvectors, np.transpose(x_projected_envelope, axes=(0,2,1))) # N * M * 1
-    PTPx_envelope = np.squeeze(PTPx_envelope, axis=2) # N * M
+    ae_comp_norms = la.norm(ae_comps.T, axis=0)
 
-    grad = np.sum(-exps * (PTPx / sigma**2 + PTPx_envelope / env_sigma**2), axis=0, keepdims=True) # 1 * M
+    ae_comps_normalized = (ae_comps / ae_comp_norms[:, np.newaxis]).T
 
-    return grad
+    centered_data = (data - mean_vector)
+    covariance_matrix = np.cov(centered_data, rowvar=False)
 
-def GradEnvGuassian(x, centers, eigenvectors, h, sigma):
-    # M = number of dimensions: 3 * number of atoms
-    # N = number of centers 
-    # k = number of CVs
-    # x: 1 * M
-    # centers: N * M
-    # eigenvectors: N * M * k
-
-    env_sigma = sigma
-    k = eigenvectors.shape[-1]
-
-    x_minus_centers_original = x - centers # N * M
-
-    x_minus_centers = np.expand_dims(x_minus_centers_original, axis=1) # N * 1 * M
-
-    eigenvectors_orth = np.array([scipy.linalg.orth(eigenvectors[i]) for i in range(len(eigenvectors))]) # N * M * k
-    x_projected_orth = np.matmul(x_minus_centers, eigenvectors_orth) * eigenvectors_orth    # N * M * k
-    x_minus_centers_expanded = np.tile(np.squeeze(x_minus_centers, axis=1)[:, :, np.newaxis], (1, 1, k)) # N * M * k
-    envelope_eigenvectors = x_minus_centers_expanded - x_projected_orth      # N * M * k
-    envelope_eigenvectors = np.array([scipy.linalg.orth(envelope_eigenvectors[i]) for i in range(len(envelope_eigenvectors))]) # N * M * k
-    x_projected_envelope = np.matmul(x_minus_centers, envelope_eigenvectors) # N * 1 * k
-    x_envelope_sq_sum = np.sum(x_projected_envelope**2, axis=(-2, -1))   # N
-
-    x_projected_sum = np.sum(x_projected_orth, axis=-1) # N * M
-    x_remainder = x_minus_centers - x_projected_sum     # N * M
-    envelope_exps = -h*np.exp(-np.expand_dims(x_remainder, axis=1)/2/env_sigma**2) # N * 1
-
-    PTPx_envelope = np.matmul(envelope_eigenvectors, np.transpose(x_projected_envelope, axes=(0,2,1))) # N * M * 1
-    PTPx_envelope = np.squeeze(PTPx_envelope, axis=2) # N * M
-
-    grad = np.sum(envelope_exps * PTPx_envelope / env_sigma**2, axis=0, keepdims=True) # 1 * M
-
-    # TODO: new way??
-    x_projected_sum = np.sum(x_projected_orth, axis=-1) # N * M
-    # print(f'x_projected_sum.shape: {x_projected_sum.shape}')
-    x_remainder = x_minus_centers_original - x_projected_sum     # N * M
-    # print(f'x_remainder.shape: {x_remainder.shape}')
-
-    x_envelope_sq_sum = np.sum(x_remainder**2, axis=-1)   # N * M -> N
-    envelope_exps = h*np.exp(-np.expand_dims(x_envelope_sq_sum, axis=1)/2/env_sigma**2) # N * 1
+    # variance of vector v is v dot (Sigma v) where Sigma is the covariance matrix
+    # source: https://math.stackexchange.com/questions/4806778/variance-in-the-direction-of-a-unit-vector-intuition-behind-formula#:~:text=Say%20we%20have%20a%20set,Σ%20is%20the%20covariance%20matrix.
+    # TODO: find better source for this
+    ae_variance = np.array([np.dot(ae_comps_normalized[:, i], np.dot(covariance_matrix, ae_comps_normalized[:, i]))for i in range(len(ae_comps_normalized[0]))])
 
 
-    return grad
+    sorted_indices = np.argsort(ae_variance)[::-1]
+    ae_variance = ae_variance[sorted_indices]
+    ae_comps_normalized = ae_comps_normalized[:, sorted_indices]
+
+    # Graham-Schmidt
+    # loop through each vector in ae_comps_normalized
+    #   project out each previous vector, if there are any
+    GS_eigenvectors = np.zeros((len(ae_comps_normalized), len(ae_comps_normalized[0])))
+    # GS_eigenvalues = np.array([])
+    # print(ae_comps_normalized)
+    for i in range(len(ae_comps_normalized)):
+        cur_vec = ae_comps_normalized[i]
+        for j in range(i-1, -1, -1):
+            prev_vec = GS_eigenvectors[j]
+            # subtract the projection of cur_vec onto prev_vec
+            cur_vec = cur_vec - prev_vec * np.dot(cur_vec, prev_vec) / np.dot(prev_vec, prev_vec)
+        GS_eigenvectors[i] = cur_vec
+        # print(i)
+        # print(cur_vec)
+        # print(GS_eigenvectors)
+    # calcuate the variances (eigenvalues) of the new vectors
+    GS_eigenvalues = np.array([np.dot(GS_eigenvectors[:, i], np.dot(covariance_matrix, GS_eigenvectors[:, i]))for i in range(len(GS_eigenvectors[0]))])
+    
+    # Sort the eigenvectors and eigenvalues based on the GS variance/eigenvalues (descending order)
+    sorted_indices = np.argsort(GS_eigenvalues)[::-1]
+    GS_eigenvalues = GS_eigenvalues[sorted_indices]
+    GS_eigenvectors = GS_eigenvectors[:, sorted_indices]
+    ae_variance = ae_variance[sorted_indices]
+    ae_comps_normalized = ae_comps_normalized[:, sorted_indices]
+
+    # the variances are the equivalent of the eigenvalues from PCA
+    return mean_vector, std_vector, ae_comps_normalized, ae_variance, GS_eigenvectors, GS_eigenvalues
+
+def GradGuassianTF(x, centers, eigenvectors, h, sigma):
+    # TODO: make it so that this tape only gets set up once. Probably need to eliminate this function altogether
+    x_value = tf.constant(x)
+    with tf.GradientTape() as tape:
+        tape.watch(x_value)
+        y = tf.constant(SumGuassianTF(x_value, centers, eigenvectors, h, sigma))
+    dy_dx = tape.gradient(y, x_value)
+    return dy_dx
 
 def SumGuassian(x, centers, eigenvectors, h, sigma):
     # x: 1 * M
     # centers: N * M
     # eigenvectors: N * M * k
     env_sigma = sigma
-    k = eigenvectors.shape[-1]
-    # M = eigenvectors.shape[-2]
 
     # Gaussian in the direction of the CVs
     x_minus_centers_original = x - centers # N * M
@@ -186,21 +200,15 @@ def SumGuassian(x, centers, eigenvectors, h, sigma):
     x_projected_sum = np.sum(x_projected_orth, axis=-1) # N * M
     x_remainder = x_minus_centers_original - x_projected_sum     # N * M
 
-    # OLD incorrect
-    # x_minus_centers_expanded = np.tile(np.squeeze(x_minus_centers, axis=1)[:, :, np.newaxis], (1, 1, k)) # N * M * k
-    # envelope_eigenvectors = x_minus_centers_expanded - x_projected_orth      # N * M * k
-    # envelope_eigenvectors = np.array([scipy.linalg.orth(envelope_eigenvectors[i]) for i in range(len(envelope_eigenvectors))]) # N * M * k
-    # x_projected_envelope = np.matmul(x_minus_centers, envelope_eigenvectors) # N * 1 * k
-    # x_envelope_sq_sum = np.sum(x_projected_envelope**2, axis=(-1,-2))   # N * M -> N for some reason
-
     x_envelope_sq_sum = np.sum(x_remainder**2, axis=-1)   # N * M -> N
 
     envelope_exps = h*np.exp(-np.expand_dims(x_envelope_sq_sum, axis=1)/2/env_sigma**2) # N * 1
 
     # Combine the Gaussians
-    exps = exps * envelope_exps
+    exps = exps * envelope_exps # N * 1
 
-    total_bias = np.sum(exps, axis=0, keepdims=True) # 1 * M
+    # total_bias = np.sum(exps, axis=0, keepdims=True) # N * 1? NOPE not at all true
+    total_bias = np.sum(exps, axis=1) # 1
 
     # TODO??: Normalize AND plot the size of normalization factor
     # Track the new sigma values that we calculate and use that for all calcs
@@ -208,7 +216,63 @@ def SumGuassian(x, centers, eigenvectors, h, sigma):
     # TODO: variable sigma's dependent on the size of the eigenvalue. Larger eigenvalue = larger Gaussian
     # NEED that as it might potentially help the AE specifically
 
+    # print(total_bias)
+    # print(f'exps.shape: {exps.shape}')
+    # print(f'x.shape: {x.shape}')
+    # print(f'total_bias.shape: {total_bias.shape}')
     return total_bias
+
+@jax.jit
+def JSumGuassian(x, centers, eigenvectors, h, sigma):
+    # x: 1 * M
+    # centers: N * M
+    # eigenvectors: N * M * k
+    env_sigma = sigma
+
+    # Gaussian in the direction of the CVs
+    x_minus_centers_original = x - centers # N * M
+    x_minus_centers = jnp.expand_dims(x_minus_centers_original, axis=1) # N * 1 * M
+    x_projected = jnp.matmul(x_minus_centers, eigenvectors) # N * 1 * k
+    x_projected_sq_sum = jnp.sum(x_projected**2, axis=(-2, -1)) # N
+    exps = h*jnp.exp(-jnp.expand_dims(x_projected_sq_sum, axis=1)/2/sigma**2) # N * 1
+
+    # Gaussian in the directions orthogonal to the CVs
+    eigenvectors_orth = jnp.array([eigenvectors[i] / jnp.linalg.norm(eigenvectors[i]) for i in range(len(eigenvectors))]) # N * M * k
+    x_projected_orth = jnp.matmul(x_minus_centers, eigenvectors_orth) * eigenvectors_orth    # N * M * k
+
+    x_projected_sum = jnp.sum(x_projected_orth, axis=-1) # N * M
+    x_remainder = x_minus_centers_original - x_projected_sum     # N * M
+
+    x_envelope_sq_sum = jnp.sum(x_remainder**2, axis=-1)   # N * M -> N
+
+    envelope_exps = h*jnp.exp(-jnp.expand_dims(x_envelope_sq_sum, axis=1)/2/env_sigma**2) # N * 1
+
+    # Combine the Gaussians
+    exps = exps * envelope_exps
+
+    total_bias = jnp.sum(exps) # 1 * M
+
+    # TODO??: Normalize AND plot the size of normalization factor
+    # Track the new sigma values that we calculate and use that for all calcs
+
+    # TODO: variable sigma's dependent on the size of the eigenvalue. Larger eigenvalue = larger Gaussian
+    # NEED that as it might potentially help the AE specifically
+
+    # TODO: would using vmap lead to a faster implementation?
+
+    return total_bias
+
+jax_SumGaussian = jax.value_and_grad(JSumGuassian)
+jax_SumGaussian_jit = jax.jit(jax_SumGaussian)
+
+def GradGuassian(x, centers, eigenvectors, h, sigma):
+    x_jnp = jnp.array(x)
+    centers_jnp = jnp.array(centers)
+    eigenvectors_jnp = jnp.array(eigenvectors)
+
+    val, grad = jax_SumGaussian_jit(x_jnp, centers_jnp, eigenvectors_jnp, h, sigma)
+
+    return grad
 
 def SumGuassianTF(x, centers, eigenvectors, h, sigma):
     # x: 1 * M
@@ -232,15 +296,6 @@ def SumGuassianTF(x, centers, eigenvectors, h, sigma):
     # Gaussian in the directions orthogonal to the CVs
     eigenvectors_orth = tf.convert_to_tensor([scipy.linalg.orth(eigenvectors[i]) for i in range(len(eigenvectors))]) # N * M * k
     x_projected_orth = tf.matmul(x_minus_centers_expanded, eigenvectors_orth) * eigenvectors_orth  # N * M * k
-    x_minus_centers_expanded_tiled = tf.tile(tf.expand_dims(x_minus_centers, axis=-1), [1, 1, k])  # N * M * k
-    envelope_eigenvectors = x_minus_centers_expanded_tiled - x_projected_orth  # N * M * k
-    envelope_eigenvectors = tf.convert_to_tensor([scipy.linalg.orth(envelope_eigenvectors[i]) for i in range(len(envelope_eigenvectors))]) # N * M * k
-    x_projected_envelope = tf.matmul(x_minus_centers_expanded, envelope_eigenvectors)  # N * 1 * k
-
-    # OLD WAY
-    x_envelope_sq_sum = tf.reduce_sum(x_projected_envelope ** 2, axis=(-2, -1))  # N
-
-    # NEW WAY
     x_projected_sum = tf.reduce_sum(x_projected_orth, axis=-1) # N * M
     x_remainder = x_minus_centers - x_projected_sum     # N * M
     x_envelope_sq_sum = tf.reduce_sum(x_remainder**2, axis=-1)   # N * M -> N
@@ -250,94 +305,30 @@ def SumGuassianTF(x, centers, eigenvectors, h, sigma):
 
     return total_bias
 
-def SumEnvGuassian(x, centers, eigenvectors, h, sigma):
-    # x: 1 * M
-    # centers: N * M
-    # eigenvectors: N * M * k
-    env_sigma = sigma
-    k = eigenvectors.shape[-1]
-
-    x_minus_centers = x - centers # N * M
-    x_minus_centers = np.expand_dims(x_minus_centers, axis=1) # N * 1 * M
-
-    # THIS IS INCORRECT
-    # Gaussian in the directions orthogonal to the CVs
-    eigenvectors_orth = np.array([scipy.linalg.orth(eigenvectors[i]) for i in range(len(eigenvectors))]) # N * M * k
-    x_projected_orth = np.matmul(x_minus_centers, eigenvectors_orth) * eigenvectors_orth    # N * M * k
-    x_minus_centers_expanded = np.tile(np.squeeze(x_minus_centers, axis=1)[:, :, np.newaxis], (1, 1, k)) # N * M * k
-    envelope_eigenvectors = x_minus_centers_expanded - x_projected_orth      # N * M * k
-    envelope_eigenvectors = np.array([scipy.linalg.orth(envelope_eigenvectors[i]) for i in range(len(envelope_eigenvectors))]) # N * M * k
-    x_projected_envelope = np.matmul(x_minus_centers, envelope_eigenvectors) # N * 1 * k
-    x_envelope_sq_sum = np.sum(x_projected_envelope**2, axis=(-2, -1))   # N
-    envelope_exps = h*np.exp(-np.expand_dims(x_envelope_sq_sum, axis=1)/2/env_sigma**2) # N * 1
-
-    total_bias = np.sum(envelope_exps, axis=0, keepdims=True) # 1 * M
-
-    # TODO??: Normalize AND plot the size of normalization factor
-    # Track the new sigma values that we calculate and use that for all calcs
-
-    # TODO: variable sigma's dependent on the size of the eigenvalue. Larger eigenvalue = larger Gaussian
-    # NEED that as it might potentially help the AE specifically
-
-    return total_bias
-
-def SumEnvGuassianTF(x, centers, eigenvectors, h, sigma):
-    # x: 1 * M
-    # centers: N * M
-    # eigenvectors: N * M * k
-    env_sigma = sigma
-    k = eigenvectors.shape[-1]
-
-    # Convert NumPy arrays to TensorFlow tensors
-    x_tensor = tf.constant(x)
-    centers_tensor = tf.constant(centers)
-    eigenvectors_tensor = tf.constant(eigenvectors)
-
-    # Gaussian in the direction of the CVs
-    x_minus_centers = x_tensor - centers_tensor  # N * M
-    x_minus_centers_expanded = tf.expand_dims(x_minus_centers, axis=1)  # N * 1 * M
-
-    # Gaussian in the directions orthogonal to the CVs
-    # THIS IS INCORRECT
-    eigenvectors_orth = tf.convert_to_tensor([scipy.linalg.orth(eigenvectors[i]) for i in range(len(eigenvectors))]) # N * M * k
-    x_projected_orth = tf.matmul(x_minus_centers_expanded, eigenvectors_orth) * eigenvectors_orth  # N * M * k
-    x_minus_centers_expanded_tiled = tf.tile(tf.expand_dims(x_minus_centers, axis=-1), [1, 1, k])  # N * M * k
-    envelope_eigenvectors = x_minus_centers_expanded_tiled - x_projected_orth  # N * M * k
-    envelope_eigenvectors = tf.convert_to_tensor([scipy.linalg.orth(envelope_eigenvectors[i]) for i in range(len(envelope_eigenvectors))]) # N * M * k
-    x_projected_envelope = tf.matmul(x_minus_centers_expanded, envelope_eigenvectors)  # N * 1 * k
-    x_envelope_sq_sum = tf.reduce_sum(x_projected_envelope ** 2, axis=(-2, -1))  # N
-    envelope_exps = h * tf.exp(-tf.expand_dims(x_envelope_sq_sum, axis=1) / (2 * env_sigma ** 2))  # N * 1
-
-    total_bias = tf.reduce_sum(envelope_exps, axis=0, keepdims=True)  # 1 * M
-
-    return total_bias
-
-# TODO: fix this function to have correct envelopes
 def DistSumGuassian(x, centers, eigenvectors, h, sigma):
     # x: 1 * M
     # centers: N * M
     # eigenvectors: N * M * k
-
-    env_sigma = sigma / 10.
-    k = eigenvectors.shape[-1]
-
-    x_minus_centers = x - centers # N * M
-    x_minus_centers_dists = np.linalg.norm(x_minus_centers, axis=1) # N
+    env_sigma = sigma
 
     # Gaussian in the direction of the CVs
-    x_minus_centers = np.expand_dims(x_minus_centers, axis=1) # N * 1 * M
+    x_minus_centers_original = x - centers # N * M
+    x_minus_centers_dists = np.linalg.norm(x_minus_centers_original, axis=1) # N
+    x_minus_centers = np.expand_dims(x_minus_centers_original, axis=1) # N * 1 * M
     x_projected = np.matmul(x_minus_centers, eigenvectors) # N * 1 * k
     x_projected_sq_sum = np.sum(x_projected**2, axis=(-2, -1)) # N
     exps = h*np.exp(-np.expand_dims(x_projected_sq_sum, axis=1)/2/sigma**2) # N * 1
 
     # Gaussian in the directions orthogonal to the CVs
-    # THIS IS INCORRECT
     eigenvectors_orth = np.array([scipy.linalg.orth(eigenvectors[i]) for i in range(len(eigenvectors))]) # N * M * k
     x_projected_orth = np.matmul(x_minus_centers, eigenvectors_orth) * eigenvectors_orth    # N * M * k
-    x_minus_centers_expanded = np.tile(np.squeeze(x_minus_centers, axis=1)[:, :, np.newaxis], (1, 1, k)) # N * M * k
-    x_envelope = x_minus_centers_expanded - x_projected_orth      # N * M * k
-    x_envelope_sq_sum = np.sum(x_envelope**2, axis=(-2, -1))   # N
-    envelope_exps = np.exp(-np.expand_dims(x_envelope_sq_sum, axis=1)/2/env_sigma**2) # N * 1
+
+    x_projected_sum = np.sum(x_projected_orth, axis=-1) # N * M
+    x_remainder = x_minus_centers_original - x_projected_sum     # N * M
+
+    x_envelope_sq_sum = np.sum(x_remainder**2, axis=-1)   # N * M -> N
+
+    envelope_exps = h*np.exp(-np.expand_dims(x_envelope_sq_sum, axis=1)/2/env_sigma**2) # N * 1
 
     # Combine the Gaussians
     exps = exps * envelope_exps
@@ -345,7 +336,7 @@ def DistSumGuassian(x, centers, eigenvectors, h, sigma):
     result = [x_minus_centers_dists, exps[:,0]]
     return result
 
-def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT):
+def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT, ic_method='PCA'):
     # M: dim
     r = np.random.randn(1, M)*1
 
@@ -410,9 +401,13 @@ def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT):
                 data = trajectories4PCA
 
                 data = np.squeeze(data, axis=1)
-                mean_vector, selected_eigenvectors = PCA(data)
+                if ic_method == 'PCA':
+                    mean_vector, selected_eigenvectors = PCA(data)
+                else:
+                    mean_vector, std_vector, selected_eigenvectors, eigenvalues, GS_eigenvectors, GS_eigenvalues = AE(data)
                 # print(selected_eigenvectors.shape, eigenvalues.shape)
                 rcenters = mean_vector
+                # TODO: should this be using the GS eigenvectors??
                 eigenvectors = np.expand_dims(selected_eigenvectors, axis=0)
 
                 ### reset the PCA dataset
@@ -425,7 +420,10 @@ def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT):
                 data = trajectories4PCA
 
                 data = np.squeeze(data, axis=1)
-                mean_vector, selected_eigenvectors = PCA(data)
+                if ic_method == 'PCA':
+                    mean_vector, selected_eigenvectors = PCA(data)
+                else:
+                    mean_vector, std_vector, selected_eigenvectors, eigenvalues, GS_eigenvectors, GS_eigenvalues = AE(data)
 
                 rcenters = np.concatenate([rcenters, mean_vector], axis=0)
                 eigenvectors = np.concatenate([eigenvectors, np.expand_dims(selected_eigenvectors, axis=0)], axis=0)
@@ -605,9 +603,9 @@ def cart2zmat(X):
 def show_trajectory_plot(r_values, LJ_values, Gauss_values):
     # all_potential_values = [LJpotential(np.array([r_values[i]])) for i in range(len(r_values))]
 
-    print(f'r_values.shape: {r_values.shape}')
-    print(f'LJ_values.shape: {LJ_values.shape}')
-    print(f'Gauss_values.shape: {Gauss_values.shape}')
+    # Gauss_values starts as a triangular shaped 2-d array (sort of), but what we want is to be plotting the sum of the bias
+    # at each center location. 
+    Gauss_values = np.array([np.sum(Gauss_values[i]) for i in range(len(Gauss_values))])
 
     all_z_values = cart2zmat(r_values)
 
@@ -639,7 +637,7 @@ def show_trajectory_plot(r_values, LJ_values, Gauss_values):
     # ax.scatter(z_trajectory[:, 0], z_trajectory[:, 1], z_trajectory[:, 2], c=indices, cmap=cmap)
     traj_plot = ax.scatter(all_z_values[0, :], all_z_values[1, :], all_z_values[2, :], c=bias_fractions, cmap=cmap)
     traj_colorbar = plt.colorbar(traj_plot)
-    traj_colorbar.set_label(f'Potential with max {max_bias:.3f} and min {min_bias:.3f}')
+    traj_colorbar.set_label(f'Bias with max {max_bias:.3f} and min {min_bias:.3f}')
     plt.show()
 
 
@@ -654,17 +652,17 @@ def show_trajectory_plot(r_values, LJ_values, Gauss_values):
     #     for j in range(len(yy)):
     #         W[i][j] = LJpotential(xx[i], yy[j])
 
-M = 30  # M = 30 for 10 atoms, each with 3 dimensions
+# M = 30  # M = 30 for 10 atoms, each with 3 dimensions
 M = 9
 # T = 20
 T = 1
 Tdeposite = 0.05    # time until place gaussian
 dt = 0.001
-h = 1
-sigma = 1
-# h = 0.1         # height
-# sigma = 0.1     # stdev
-kbT = 0.01
+# h = 1
+# sigma = 1
+h = 0.01         # height
+sigma = 0.005     # stdev
+kbT = 0.0001    # 0.0001 seems to work??
 
 ten_atom_init = [   [-0.112678561569957,   1.154350068036701,  -0.194840194577019],
                     [0.455529927957375,  -0.141698933988423,   1.074987039970359],
@@ -681,26 +679,27 @@ three_atom_init = [ [0.4391356726,        0.1106588251,       -0.4635601962],
                     [-0.5185079933,        0.3850176090,        0.0537084789],
                     [0.0793723207,       -0.4956764341,        0.4098517173]]
 
-# LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT)
+LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT, ic_method='PCA')
+# LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT, ic_method='PCA')
 
-N = 1
-M = 2
-k = 1
-h = 0.1
-sigma = 0.2
+# N = 1
+# M = 2
+# k = 1
+# h = 0.1
+# sigma = 0.2
 
-h = 10
-sigma = 10
+# h = 10
+# sigma = 10
 
-N = 5
-M = 7
-k = 2
+# N = 5
+# M = 7
+# k = 2
 # h = 0.1
 # sigma = 0.4
 
-x = np.random.rand(1, M)
-centers = np.random.rand(N, M)
-eigenvectors = np.random.rand(N, M, k)
+# x = np.random.rand(1, M)
+# centers = np.random.rand(N, M)
+# eigenvectors = np.random.rand(N, M, k)
 # x = np.array([[1.,1.]])
 # centers = np.array([[0.,0.]])
 # eigenvectors = np.array([[[0.],[1.]]])
@@ -717,35 +716,21 @@ eigenvectors = np.random.rand(N, M, k)
 # plt.colorbar(contourf_)
 # plt.show()
 
-print('Full')
-print(GradGuassian(x, centers, eigenvectors, h, sigma))
-for i in range(M):
-    shift = 0.0001
-    e=np.zeros((1,M))
-    e[0, i]= shift
-    print((SumGuassian(x+e, centers, eigenvectors, h, sigma)-SumGuassian(x, centers, eigenvectors, h, sigma))/shift)
+# print('Full')
+# print(GradGuassian(x, centers, eigenvectors, h, sigma))
+# for i in range(M):
+#     shift = 0.0001
+#     e=np.zeros((1,M))
+#     e[0, i]= shift
+#     print((SumGuassian(x+e, centers, eigenvectors, h, sigma)-SumGuassian(x, centers, eigenvectors, h, sigma))/shift)
 
-x_value = tf.constant(x)
-with tf.GradientTape() as tape:
-    tape.watch(x_value)
-    y = tf.constant(SumGuassianTF(x_value, centers, eigenvectors, h, sigma))
-dy_dx = tape.gradient(y, x_value)
-print(dy_dx)
+# x_value = tf.constant(x)
+# with tf.GradientTape() as tape:
+#     tape.watch(x_value)
+#     y = tf.constant(SumGuassianTF(x_value, centers, eigenvectors, h, sigma))
+# dy_dx = tape.gradient(y, x_value)
+# print(dy_dx)
 
-print('Envelope')
-print(GradEnvGuassian(x, centers, eigenvectors, h, sigma))
-x_value = tf.constant(x)
-with tf.GradientTape() as tape:
-    tape.watch(x_value)
-    y = tf.constant(SumEnvGuassianTF(x_value, centers, eigenvectors, h, sigma))
-dy_dx = tape.gradient(y, x_value)
-print(dy_dx)
-
-for i in range(M):
-    shift = 0.0001
-    e=np.zeros((1,M))
-    e[0, i]= shift
-    print((SumEnvGuassian(x+e, centers, eigenvectors, h, sigma)-SumEnvGuassian(x, centers, eigenvectors, h, sigma))/shift)
 # LD(24, 0.001, 200)
 # #
 # # Set up basinhopping optimization

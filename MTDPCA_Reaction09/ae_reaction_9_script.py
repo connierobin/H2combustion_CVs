@@ -8,7 +8,6 @@ import tensorflow as tf
 from tensorflow.keras import Sequential
 from tensorflow.keras.layers import Input, Dense
 from tensorflow.keras.models import Model
-from sklearn.preprocessing import normalize
 
 datadict_PES = scipy.io.loadmat('./R09PES3D.mat')
 max_PES = np.max(datadict_PES['V'])
@@ -118,19 +117,34 @@ def plot_comparison(PCA_data, AE_data, PCA_vectors, AE_vectors):
     AE_data = np.array(AE_data)
 
     similarities = []
+    # for i in range(len(PCA_vectors)):
+    #     similarity_value = 0.
+    #     for j in range(2):  # Only compare the first 2 vectors
+    #         similarity_value = similarity_value + np.abs(1 - scipy.spatial.distance.cosine(PCA_vectors[i][j], AE_vectors[i][j]))
+    #     similarities.append(similarity_value)
+
     for i in range(len(PCA_vectors)):
         similarity_value = 0.
-        for j in range(2):  # Only compare the first 2 vectors
-            similarity_value = similarity_value + (1 - scipy.spatial.distance.cosine(PCA_vectors[i][j], AE_vectors[i][j]))
+        vec1 = np.cross(PCA_vectors[i][0], PCA_vectors[i][1])
+        vec2 = np.cross(AE_vectors[i][0], AE_vectors[i][1])
+        similarity_value = np.abs(1 - scipy.spatial.distance.cosine(vec1, vec2))
         similarities.append(similarity_value)
     
     # TODO: plot the cosine similarities on their own
-
-    # TODO: use 'cool' and 'autumn' colormaps
+    
     fig, ax = plt.subplots()
-    # cmap = 
-    ax.scatter(PCA_data[:, 0], PCA_data[:, 1], label='PCA', c=similarities, cmap='autumn')
-    ax.scatter(AE_data[:, 0], AE_data[:, 1], label='AE (orthogonalized)', c=similarities, cmap='winter')
+    ax.scatter(range(len(similarities)), similarities)
+    plt.xlabel('Iteration')
+    plt.title('Cosine Similarity of the [Cross Product of the First Two CVs] between PCA and AE')
+    plt.show()
+
+    fig, ax = plt.subplots()
+    pca_plot = ax.scatter(PCA_data[:, 0], PCA_data[:, 1], label='PCA', c=similarities, cmap='autumn')
+    pca_colorbar = plt.colorbar(pca_plot)
+    pca_colorbar.set_label('PCA CVs')
+    ae_plot = ax.scatter(AE_data[:, 0], AE_data[:, 1], label='AE (orthogonalized)', c=similarities, cmap='winter')
+    ae_colorbar = plt.colorbar(ae_plot)
+    ae_colorbar.set_label('AE CVs')
 
     # lims = [
     #     np.min([ax.get_xlim(), ax.get_ylim()]),  # min of both axes
@@ -151,11 +165,9 @@ def plot_comparison(PCA_data, AE_data, PCA_vectors, AE_vectors):
     plt.xlabel('Variance of First CV')
     plt.ylabel('Variance of Second CV')
 
-    # TODO: color code based on angle between vectors!!
-
     ax.axline((0, 0), slope=1)
 
-    ax.legend()
+    # ax.legend()
 
     ax.set_aspect('equal')
     buffer = 0.1
@@ -173,6 +185,8 @@ def plot_comparison(PCA_data, AE_data, PCA_vectors, AE_vectors):
     ax.set_ylim([all_min, all_max])
 
     plt.show()
+
+    return similarities
 
 def PCA(data): # datasize: N * dim
     # Step 4.1: Compute the mean of the data
@@ -497,11 +511,18 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, coarse=1, ic_method='
                 trajectories_PCA = np.zeros((NstepsDeposite, 1, 3))
     trajectories[NstepsSave, :] = q
 
+    similarities = None
+    similarities_extended = []
     if ic_method == 'compare':
         print('comparing')
-        plot_comparison(compare_variances_PCA, compare_variances_AE, compare_vectors_PCA, compare_vectors_AE)
+        similarities = plot_comparison(compare_variances_PCA, compare_variances_AE, compare_vectors_PCA, compare_vectors_AE)
+        multiplier = int(NstepsSave / len(similarities))
+        similarities_extended.append(similarities[0])
+        for i in range(len(similarities)):
+            for j in range(multiplier):
+                similarities_extended.append(similarities[i])
 
-    return trajectories, qs, save_eigenvector_s, save_eigenvalue_s
+    return trajectories, qs, save_eigenvector_s, save_eigenvalue_s, similarities_extended
 
 
 def next_step(qnow, qs, qstd, qsz, method, choose_eigenvalue, save_eigenvector_s, height, sigma, dt=1e-3, beta=1.0):
@@ -523,8 +544,8 @@ if __name__ == '__main__':
     # ax1 = fig.add_subplot(1, 2, 1)
     # contourf_ = ax1.contourf(X, Y, W, levels=29)
 
-    ic_method = 'compare'
-    T = 0.5
+    ic_method = 'PCA'
+    T = 2
 
     cmap = plt.get_cmap('plasma')
     ircdata = scipy.io.loadmat('./irc09.mat')['irc09'][0][0][3]
@@ -533,9 +554,10 @@ if __name__ == '__main__':
     print(ircdata.shape)
     coarse = 100
     for i in range(1):
-        trajectories, qs, save_eigenvector_s, save_eigenvalue_s = MD(x0, T = T, Tdeposite=1e-2, height=1, sigma=0.3, dt=2e-5, beta=1, coarse=coarse, ic_method=ic_method)
+        trajectories, qs, save_eigenvector_s, save_eigenvalue_s, similarities = MD(x0, T = T, Tdeposite=1e-2, height=1, sigma=0.3, dt=2e-5, beta=1, coarse=coarse, ic_method=ic_method)
 
-    print(trajectories.shape)
+    print(f'trajectories.shape: {trajectories.shape}')
+    print(f'save_eigenvector_s.shape: {save_eigenvector_s.shape}')
 
     z_trajectory = (cart2zmat(trajectories[:,0])).T
 
@@ -543,10 +565,21 @@ if __name__ == '__main__':
     # Create a 3D plot
     fig = plt.figure()
     ax = fig.add_subplot(111, projection='3d')
-    ax.scatter(z_trajectory[:, 0], z_trajectory[:, 1], z_trajectory[:, 2], c=indices, cmap=cmap)
+    # ax.scatter(z_trajectory[:, 0], z_trajectory[:, 1], z_trajectory[:, 2], c=indices, cmap=cmap)
+    traj_plot = ax.scatter(z_trajectory[:, 0], z_trajectory[:, 1], z_trajectory[:, 2], c=similarities, cmap=cmap)
+    # TODO: figure out which axis is which and set axis labels
+
+    traj_colorbar = plt.colorbar(traj_plot)
+    traj_colorbar.set_label('Cos Similarity')
     plt.savefig('rxn9_test.png')
     plt.show()
     np.savez(f'T10_deposit5e-3_dt2e-5-{ic_method}s-InternalCoordinates_height1_T10_debug-nonlocal', z = z_trajectory, x = trajectories, qs=qs, eignvectors=save_eigenvector_s, eigenvalues=save_eigenvalue_s)
+
+    # with open('trajectories.txt', 'wb') as f:
+    #     f.write(trajectories)
+
+    np.savetxt('trajectories.txt', trajectories[:,0], delimiter=',')
+    np.savetxt('save_eigenvector_s.txt', np.array([save_eigenvector_s[i].flatten() for i in range(len(save_eigenvector_s))]), delimiter=',')
 
     #     # print(trajectory.shape)
     #     indices = np.arange(trajectory.shape[0])

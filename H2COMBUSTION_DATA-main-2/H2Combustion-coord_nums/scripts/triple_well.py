@@ -12,7 +12,7 @@ threshold = 0.5
 
 class TripleWellSimulation:
 
-    def __init__(self, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, method='AE', checkpoint_name='triple_well_normalized.checkpoint'):
+    def __init__(self, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, method='AE', checkpoint_name='triple_well_unnormalized.checkpoint'):
         self.T = T
         self.Tdeposite = Tdeposite
         self.height = height
@@ -75,11 +75,21 @@ class TripleWellSimulation:
         yy = np.linspace(-1, 2, 100)
         [X, Y] = np.meshgrid(xx, yy)  # 100*100
         W = self.potential(X, Y)
+        Gs = self.GaussiansPCA(np.concatenate([X.reshape(-1,1), Y.reshape(-1,1)], axis=1), self.qs, self.eigenvectors, height=self.height, sigma=self.sigma)
+
+        v_min_ = np.min(W)
+        v_max_ = np.max(W)
+        v_min_2 = np.min(Gs.reshape(100,100)+W)
+        v_max_2 = np.max(Gs.reshape(100,100)+W)
+        v_min_3 = np.min(Gs.reshape(100,100))
+        v_max_3 = np.max(Gs.reshape(100,100))
+        all_min = np.min([v_min_, v_min_2, v_min_3])
+        all_max = np.max([v_max_, v_max_2, v_max_3])
 
         fig = plt.figure(figsize=(10,6))
         ax1 = fig.add_subplot(1, 3, 1)
-        contourf_ = ax1.contourf(X, Y, W, levels=29)
-        plt.colorbar(contourf_)
+        contourf_ = ax1.contourf(X, Y, W, levels=29, vmin=all_min, vmax=all_max)
+        # plt.colorbar(contourf_)
 
         # T = 10
         # height = 0.1  # set smaller, to 0.05
@@ -87,23 +97,27 @@ class TripleWellSimulation:
 
         cmap = plt.get_cmap('plasma')
         indices = np.arange(self.trajectories.shape[0])
-        ax1.scatter(self.trajectories[:,0, 0], self.trajectories[:,0, 1], c=indices, cmap=cmap)
+        # ax1.scatter(self.trajectories[:,0, 0], self.trajectories[:,0, 1], c=indices, cmap=cmap)
 
-        Gs = self.GaussiansPCA(np.concatenate([X.reshape(-1,1), Y.reshape(-1,1)], axis=1), self.qs, self.eigenvectors, height=self.height, sigma=self.sigma)
         ax2 = fig.add_subplot(1, 3, 2)
-        contourf_2 = ax2.contourf(X, Y, Gs.reshape(100,100)+W, levels=29)
-        plt.colorbar(contourf_2)
+        contourf_2 = ax2.contourf(X, Y, Gs.reshape(100,100)+W, levels=29, vmin=all_min, vmax=all_max)
+        # plt.colorbar(contourf_2)
         indices = np.arange(self.qs.shape[0])
         cmap = plt.get_cmap('plasma')
         # ax2.scatter(qs[::-1, 0], qs[::-1, 1], c=indices, cmap=cmap)
         ax2.quiver(self.qs[:, 0], self.qs[:, 1], self.eigenvectors[0,:], self.eigenvectors[1,:])
 
+        plt.title(f'Local {self.method} dynamics')
+
         ax3 = fig.add_subplot(1, 3, 3)
-        contourf_3 = ax3.contourf(X, Y, Gs.reshape(100,100), levels=29)
-        plt.colorbar(contourf_3)
+        contourf_3 = ax3.contourf(X, Y, Gs.reshape(100,100), levels=29, vmin=all_min, vmax=all_max)
+        # plt.colorbar(contourf_3)
+
+        fig.subplots_adjust(right=0.8)
+        cbar_ax = fig.add_axes([0.85, 0.15, 0.05, 0.7])
+        fig.colorbar(contourf_, cax=cbar_ax)
 
         # fig.colorbar(contourf_)
-        plt.title(f'Local AE dynamics')
         plt.show()
 
     def potential(self, qx, qy):
@@ -157,6 +171,7 @@ class TripleWellSimulation:
         selected_eigenvectors = eigenvectors[:, 0:1]
         # print(selected_eigenvectors.shape)
         # selected_eigenvectors = np.array([[1], [0]])
+        selected_eigenvectors = selected_eigenvectors * eigenvalues[0:1]
         # Step 4.8: Transform your data to the new lower-dimensional space
         transformed_data = np.dot(centered_data, selected_eigenvectors)
 
@@ -364,7 +379,7 @@ class TripleWellSimulation:
 
 if __name__ == "__main__":
     # TripleWellSimulation(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, method='AE', checkpoint_name='triple_well.checkpoint')
-    t = TripleWellSimulation(T=10, Tdeposite=0.5, height=0.05, sigma=0.1, dt=1e-3, beta=1.0, method='PCA', checkpoint_name='triple_well_normalized.checkpoint')
+    t = TripleWellSimulation(T=100, Tdeposite=0.5, height=0.05, sigma=0.1, dt=1e-3, beta=1.0, method='PCA', checkpoint_name='triple_well_unnormalized.checkpoint')
     # run('PCA', T=10)
     # t.run_and_plot(need_restart=True)
     t = t.run(need_restart=False)

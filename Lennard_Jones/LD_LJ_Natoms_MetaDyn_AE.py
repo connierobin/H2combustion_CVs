@@ -62,6 +62,76 @@ def GradLJpotential(r): ## r size 1*M M is a multiple of 3
             grad[0,i * 3:i * 3 + 3] += GradPsi(atom1, atom2)
     return grad
 
+def center_of_mass(r):
+    total_mass = len(r)
+    com = np.sum(r, axis=0) / total_mass
+    return com
+
+def moments_of_inertia(r, com):
+    inertia_tensor = np.zeros((3, 3))
+    for particle in r:
+        rel_position = particle - com
+        # print(f'relative position: {rel_position}')
+        inertia_tensor += np.outer(rel_position, rel_position)
+        # print(f'inertia tensor: {inertia_tensor}')
+    return inertia_tensor
+
+def principal_axes(inertia_tensor):
+    eigenvalues, eigenvectors = np.linalg.eigh(inertia_tensor)
+    # Sort eigenvectors based on eigenvalues
+    order = np.argsort(eigenvalues)[::-1]
+    # eigenvalues = eigenvalues[order]
+    eigenvectors = eigenvectors[:, order]
+    return eigenvectors
+
+# Shift positions so center of mass is at the origin, and so that the moments of inertia
+# are aligned with the z,y,x axes; z is the direction of the largest moment of inertia
+def rotate_r_to_principal_axes(r):
+    Natoms = int(r.shape[-1] / 3)
+    r = np.reshape(r, (Natoms, 3))
+    com = center_of_mass(r)
+    r_shifted = r - com
+    inertia_tensor = moments_of_inertia(r_shifted, com)
+    eigenvectors = principal_axes(inertia_tensor)
+    r_rotated = np.dot(r_shifted, eigenvectors)
+    r_rotated = np.reshape(r_rotated, (1, 3*Natoms))
+    return r_rotated
+
+def rotate_all_to_principal_axes(r, rcenters, ic_eigenvectors):
+    Natoms = int(r.shape[-1] / 3)
+    print(f'Natoms: {Natoms}')
+    r = np.reshape(r, (Natoms, 3))
+    com = center_of_mass(r)
+    r_shifted = r - com
+    inertia_tensor = moments_of_inertia(r_shifted, com)
+    eigenvectors = principal_axes(inertia_tensor)
+
+    r_rotated = np.dot(r_shifted, eigenvectors)
+    r_rotated = np.reshape(r_rotated, (1, 3*Natoms))
+
+    print(f'rcenters.shape: {rcenters.shape}')
+    Natoms = int(rcenters.shape[-1] / 3)
+    print(f'Natoms: {Natoms}')
+    rcenters = np.reshape(r, (Natoms, 3))   # from 1 * 3Natoms to 3 * Natoms
+    print(f'rcenters.shape: {rcenters.shape}')
+    rcenters_shifted = rcenters - com
+    rcenters_rotated = np.dot(rcenters_shifted, eigenvectors)
+    rcenters_rotated = np.reshape(rcenters_rotated, (1, 3*Natoms))
+    print(f'rcenters_rotated.shape: {rcenters_rotated.shape}')
+
+    print(f'ic_eigenvectors.shape: {ic_eigenvectors.shape}')
+    k = ic_eigenvectors.shape[-1]
+    Natoms = int(ic_eigenvectors.shape[-2] / 3)
+    Ngauss = int(ic_eigenvectors.shape[0])
+    print(f'Natoms: {Natoms}')
+    ic_eigenvectors = np.reshape(ic_eigenvectors, (Ngauss, Natoms, 3, k))
+    print(f'ic_eigenvectors.shape: {ic_eigenvectors.shape}')
+    ic_eigenvectors_rotated = np.tensordot(ic_eigenvectors, eigenvectors, axes=([2], [1]))
+    ic_eigenvectors_rotated = np.reshape(ic_eigenvectors_rotated, (Ngauss, 3*Natoms, k))
+    print(f'ic_eigenvectors_rotated.shape: {ic_eigenvectors_rotated.shape}')
+
+    return r_rotated, rcenters_rotated, ic_eigenvectors_rotated
+
 def PCA(data):  # datasize: N * dim
     # Step 4.1: Compute the mean of the data
     data_z = data  # bs*3
@@ -426,6 +496,7 @@ def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT, ic_method='PCA'):
                     mean_vector, std_vector, selected_eigenvectors, eigenvalues, GS_eigenvectors, GS_eigenvalues = AE(data)
 
                 rcenters = np.concatenate([rcenters, mean_vector], axis=0)
+                print(f'rcenters shape: {rcenters.shape}')
                 eigenvectors = np.concatenate([eigenvectors, np.expand_dims(selected_eigenvectors, axis=0)], axis=0)
                 # print(rcenters.shape, eigenvectors.shape)
 
@@ -465,8 +536,11 @@ def next_step(r, rcenters, eigenvectors, h, sigma, kbT, dt):
 
     if rcenters is None:
         r = next_LD(r, dt, kbT)
+        r = rotate_r_to_principal_axes(r)
     else:
         r = next_LD_Gaussian(r, dt, rcenters, eigenvectors, h, sigma, kbT)
+        # r, rcenters, eigenvectors = rotate_all_to_principal_axes(r, rcenters, eigenvectors)
+        r = rotate_r_to_principal_axes(r)
     return r
 
 def analyze_means(means):
@@ -660,9 +734,14 @@ Tdeposite = 0.05    # time until place gaussian
 dt = 0.001
 # h = 1
 # sigma = 1
-h = 0.01         # height
-sigma = 0.005     # stdev
-kbT = 0.0001    # 0.0001 seems to work??
+
+# This seemed to work well for 3 atoms with the COM/MOI symmetry reduction strategy
+T = 1
+Tdeposite = 0.05    # time until place gaussian
+dt = 0.001
+h = 0.5         # height
+sigma = 0.5     # stdev
+kbT = 0.1    # 0.0001 seems to work??
 
 ten_atom_init = [   [-0.112678561569957,   1.154350068036701,  -0.194840194577019],
                     [0.455529927957375,  -0.141698933988423,   1.074987039970359],

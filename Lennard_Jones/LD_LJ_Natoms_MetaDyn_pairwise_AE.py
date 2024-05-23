@@ -258,15 +258,6 @@ def AE(data, pairs):
     # the variances are the equivalent of the eigenvalues from PCA
     return mean_vector, std_vector, ae_comps_normalized, ae_variance, GS_eigenvectors, GS_eigenvalues
 
-def GradGuassianTF(x, centers, eigenvectors, h, sigma):
-    # TODO: make it so that this tape only gets set up once. Probably need to eliminate this function altogether
-    x_value = tf.constant(x)
-    with tf.GradientTape() as tape:
-        tape.watch(x_value)
-        y = tf.constant(SumGuassianTF(x_value, centers, eigenvectors, h, sigma))
-    dy_dx = tape.gradient(y, x_value)
-    return dy_dx
-
 def SumGuassianPW(pw_x, pw_centers, eigenvectors, h, sigma, unsummed=False):
     env_sigma = sigma
 
@@ -307,7 +298,7 @@ def SumGuassianPW(pw_x, pw_centers, eigenvectors, h, sigma, unsummed=False):
     else:
         return np.sum(total_bias)
 
-def SumGuassian(x, pairs, centers, eigenvectors, h, sigma, unsummed=False):
+def SumGuassian(x, pairs, centers_pw, eigenvectors, h, sigma, unsummed=False):
     # M = total dimensions, 3 * Natoms
     # N = number of iterations
     # k = number of CV dimensions
@@ -316,8 +307,8 @@ def SumGuassian(x, pairs, centers, eigenvectors, h, sigma, unsummed=False):
     # centers: N * M
     # eigenvectors: N * M * k
 
-    pw_x = np.array([get_pairwise_distances(x, pairs)])                 # 1 * D
-    pw_centers = np.array([get_pairwise_distances(centers[i], pairs) for i in range(len(centers))]) # N * D
+    pw_x = np.array([get_pairwise_distances(x, pairs)])     # 1 * D
+    pw_centers = centers_pw                                 # N * D
 
     return SumGuassianPW(pw_x, pw_centers, eigenvectors, h, sigma, unsummed)
 
@@ -345,7 +336,7 @@ def JSumGuassianPW(pw_x, pw_centers, eigenvectors, h, sigma, unsummed=False):
     exps = exps * envelope_exps # N * 1
 
     # total_bias = np.sum(exps, axis=0, keepdims=True) # N * 1? NOPE not at all true
-    total_bias = jnp.sum(exps, axis=1) # 1
+    total_bias = jnp.sum(exps, axis=1) # 1? or N?
 
     # TODO??: Normalize AND plot the size of normalization factor
     # Track the new sigma values that we calculate and use that for all calcs
@@ -362,34 +353,90 @@ def JSumGuassianPW(pw_x, pw_centers, eigenvectors, h, sigma, unsummed=False):
     else:
         return jnp.sum(total_bias)
 
-# This function is never used, I think?
-def JSumGuassian(x, pairs, centers, eigenvectors, h, sigma, unsummed=False):
+# NOTE: I tested the recursive version in hopes that it would result in more cache hits, but it seemingly ran slower than
+# the regular way
+# @jax.jit
+def JSumGuassianPWRecursive(pw_x, pw_centers, eigenvectors, h, sigma, unsummed=False):
     # x: 1 * M
     # centers: N * M
     # eigenvectors: N * M * k
 
-    pw_x = jnp.array([Jget_pairwise_distances(x, pairs)])                 # 1 * D
-    pw_centers = jnp.array([Jget_pairwise_distances(centers[i], pairs) for i in range(len(centers))]) # N * D
+    env_sigma = sigma
+
+    this_center = pw_centers[-1:,:]  # 1 * M
+    remaining_centers = pw_centers[:-1,:]   # N-1 * M
+    this_eigenvectors = eigenvectors[-1:,:,:]    # 1 * M * k
+    remaining_eigenvectors = eigenvectors[:-1,:,:] # N-1 * M * k
+
+    if remaining_centers.shape[0] == 0:
+        if unsummed:
+            return np.array([])
+        return 0.
+
+    pw_x_minus_centers_original = pw_x - this_center                             # N * D
+    pw_x_minus_centers = jnp.expand_dims(pw_x_minus_centers_original, axis=1)    # N * 1 * D
+    pw_x_projected = jnp.matmul(pw_x_minus_centers, this_eigenvectors)        # N * 1 * k
+    pw_x_projected_sq_sum = jnp.sum(pw_x_projected**2, axis=(-2, -1))    # N
+    exps = h*jnp.exp(-jnp.expand_dims(pw_x_projected_sq_sum, axis=1)/2/sigma**2)        # N * 1
+
+    # Gaussian in the directions orthogonal to the CVs
+    eigenvectors_orth = jnp.array([jscipy.linalg.qr(this_eigenvectors[i], mode='economic')[0] for i in range(len(this_eigenvectors))]) #  N * D * k
+    pairdists_projected_orth = jnp.matmul(pw_x_minus_centers, eigenvectors_orth) * eigenvectors_orth    # N * D * k
+    pairdists_projected_sum = jnp.sum(pairdists_projected_orth, axis=-1)             # N * D
+    pairdists_remainder = pw_x_minus_centers_original - pairdists_projected_sum     # N * D
+
+    pairdists_envelope_sq_sum = jnp.sum(pairdists_remainder**2, axis=-1)   # N
+
+    envelope_exps = h*jnp.exp(-jnp.expand_dims(pairdists_envelope_sq_sum, axis=1)/2/env_sigma**2) # N * 1
+
+    # Combine the Gaussians
+    exps = exps * envelope_exps # N * 1
+
+    # total_bias = np.sum(exps, axis=0, keepdims=True) # N * 1? NOPE not at all true
+    total_bias = jnp.sum(exps, axis=1) # 1? or N?
+
+    # TODO??: Normalize AND plot the size of normalization factor
+    # Track the new sigma values that we calculate and use that for all calcs
+
+    # TODO: variable sigma's dependent on the size of the eigenvalue. Larger eigenvalue = larger Gaussian
+    # NEED that as it might potentially help the AE specifically
+
+    # print(total_bias)
+    # print(f'exps.shape: {exps.shape}')
+    # print(f'x.shape: {x.shape}')
+    # print(f'total_bias.shape: {total_bias.shape}')
+    if unsummed:
+        return total_bias.append(JSumGuassianPWRecursive(pw_x, remaining_centers, remaining_eigenvectors, h, sigma, unsummed=True))
+    else:
+        return jnp.sum(total_bias) + JSumGuassianPWRecursive(pw_x, remaining_centers, remaining_eigenvectors, h, sigma)
+
+# This function is never used, I think?
+def JSumGuassian(x, pairs, centers_pw, eigenvectors, h, sigma, unsummed=False):
+    # x: 1 * M
+    # centers: N * M
+    # eigenvectors: N * M * k
+
+    pw_x = jnp.array([Jget_pairwise_distances(x, pairs)])   # 1 * D
+    pw_centers = jnp.array(centers_pw)                      # N * D
 
     return JSumGuassianPW(pw_x, pw_centers, eigenvectors, h, sigma, unsummed)
 
-jax_SumGaussianPW = jax.value_and_grad(JSumGuassianPW)
+jax_SumGaussianPW = jax.grad(JSumGuassianPW)
 jax_SumGaussianPW_jit = jax.jit(jax_SumGaussianPW)
 
-def GradGuassian(x, pairs, centers, eigenvectors, h, sigma):
-    pw_x_jnp = jnp.array([Jget_pairwise_distances(x, pairs)])                 # 1 * D
-    pw_centers_jnp = jnp.array([Jget_pairwise_distances(centers[i], pairs) for i in range(len(centers))]) # N * D
+# jax_SumGaussianPWRecursive = jax.grad(JSumGuassianPWRecursive)
+# jax_SumGaussianPWRecursive_jit = jax.jit(jax_SumGaussianPWRecursive)
+
+def GradGuassian(x, pairs, centers_pw, eigenvectors, h, sigma):
+    pw_x_jnp = jnp.array([Jget_pairwise_distances(x, pairs)])   # 1 * D
+    pw_centers_jnp = centers_pw                                 # N * D
     eigenvectors_jnp = jnp.array(eigenvectors)
 
-    # print('centers:')
-    # print(centers)
-    # print(f'centers.shape 1: {centers.shape}')
-    # print(f'pw_centers.shape 1: {pw_centers_jnp.shape}')
+    # val, pw_grad = jax_SumGaussianPW_jit(pw_x_jnp, pw_centers_jnp, eigenvectors_jnp, h, sigma)
+    # pw_grad = jax_SumGaussianPW_jit(pw_x_jnp, pw_centers_jnp, eigenvectors_jnp, h, sigma)
+    pw_grad = jax_SumGaussianPW(pw_x_jnp, pw_centers_jnp, eigenvectors_jnp, h, sigma)
 
-    val, pw_grad = jax_SumGaussianPW_jit(pw_x_jnp, pw_centers_jnp, eigenvectors_jnp, h, sigma)
-
-    # TODO: convert the grads of the pairwise distances into grads of the actual positions!!!
-
+    # TODO: test that the below code is correct
     # print(f'pw_grad.shape: {pw_grad.shape}')
     N = pw_grad.shape[0]
     D = pw_grad.shape[1]
@@ -406,7 +453,7 @@ def GradGuassian(x, pairs, centers, eigenvectors, h, sigma):
         for i in range(D):
             atom1 = pairs[i][0]
             atom2 = pairs[i][1]
-            update_vec = pw_grad[j][i] * (x_vals[atom2] - x_vals[atom1])
+            update_vec = pw_grad[j][i] * (x_vals[atom2] - x_vals[atom1])   # TODO: put in the cartesian chain rule part
             x_grad[atom1] += update_vec
             x_grad[atom2] -= update_vec
 
@@ -419,45 +466,14 @@ def GradGuassian(x, pairs, centers, eigenvectors, h, sigma):
 
     return x_grad
 
-def SumGuassianTF(x, centers, eigenvectors, h, sigma):
-    # x: 1 * M
-    # centers: N * M
-    # eigenvectors: N * M * k
-
-    env_sigma = sigma
-
-    # Convert NumPy arrays to TensorFlow tensors
-    x_tensor = tf.constant(x)
-    centers_tensor = tf.constant(centers)
-    eigenvectors_tensor = tf.constant(eigenvectors)
-
-    # Gaussian in the direction of the CVs
-    x_minus_centers = x_tensor - centers_tensor  # N * M
-    x_minus_centers_expanded = tf.expand_dims(x_minus_centers, axis=1)  # N * 1 * M
-    x_projected = tf.matmul(x_minus_centers_expanded, eigenvectors_tensor)  # N * 1 * k
-    x_projected_sq_sum = tf.reduce_sum(x_projected ** 2, axis=(-2, -1))  # N
-    exps = h * tf.exp(-tf.expand_dims(x_projected_sq_sum, axis=1) / (2 * sigma ** 2))  # N * 1
-
-    # Gaussian in the directions orthogonal to the CVs
-    eigenvectors_orth = tf.convert_to_tensor([scipy.linalg.orth(eigenvectors[i]) for i in range(len(eigenvectors))]) # N * M * k
-    x_projected_orth = tf.matmul(x_minus_centers_expanded, eigenvectors_orth) * eigenvectors_orth  # N * M * k
-    x_projected_sum = tf.reduce_sum(x_projected_orth, axis=-1) # N * M
-    x_remainder = x_minus_centers - x_projected_sum     # N * M
-    x_envelope_sq_sum = tf.reduce_sum(x_remainder**2, axis=-1)   # N * M -> N
-
-    envelope_exps = h * tf.exp(-tf.expand_dims(x_envelope_sq_sum, axis=1) / (2 * env_sigma ** 2))  # N * 1
-    total_bias = tf.reduce_sum(envelope_exps * exps, axis=0, keepdims=True)  # 1 * M
-
-    return total_bias
-
-def DistSumGuassian(x, pairs, centers, eigenvectors, h, sigma):
+def DistSumGuassian(x, pairs, centers_pw, eigenvectors, h, sigma):
     # x: 1 * M
     # centers: N * M
     # eigenvectors: N * M * k
     env_sigma = sigma
 
-    pw_x = np.array([get_pairwise_distances(x, pairs)])                 # 1 * D
-    pw_centers = np.array([get_pairwise_distances(centers[i], pairs) for i in range(len(centers))]) # N * D
+    pw_x = np.array([get_pairwise_distances(x, pairs)])     # 1 * D
+    pw_centers = centers_pw                                 # N * D
 
     pw_x_minus_centers_original = pw_x - pw_centers                             # N * D
     pw_x_minus_centers_dists = np.linalg.norm(pw_x_minus_centers_original, axis=1) # N
@@ -504,6 +520,7 @@ def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT, ic_method='PCA'):
     trajectories4PCA = np.zeros((NstepsDeposite, 1, M))
 
     rcenters = None
+    rcenters_pw = None
     eigenvectors = None
     # Smallest = float('inf')
 
@@ -520,6 +537,7 @@ def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT, ic_method='PCA'):
     Gauss_center_values = []
 
     for i in tqdm(range(Nsteps)):
+        time1 = time.time()
         print(LJpotential(r))
 
         LJpot = LJpotential(r)
@@ -528,9 +546,9 @@ def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT, ic_method='PCA'):
             Gauss = 0
             GaussGrad = 0
         else:
-            Gauss_v_dist = DistSumGuassian(r, pairs, rcenters, eigenvectors, h, sigma)
-            Gauss = np.sum(SumGuassian(r, pairs, rcenters, eigenvectors, h, sigma, unsummed=True))
-            GaussGrad = np.sum(GradGuassian(r, pairs, rcenters, eigenvectors, h, sigma))
+            Gauss_v_dist = DistSumGuassian(r, pairs, rcenters_pw, eigenvectors, h, sigma)
+            Gauss = np.sum(SumGuassian(r, pairs, rcenters_pw, eigenvectors, h, sigma, unsummed=True))
+            GaussGrad = np.sum(GradGuassian(r, pairs, rcenters_pw, eigenvectors, h, sigma))     # NOTE: this is the timing bottleneck to to jit recompiling
             Gauss_v_dist_values.append(Gauss_v_dist)
 
         LJ_values.append(LJpot)
@@ -541,7 +559,7 @@ def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT, ic_method='PCA'):
         LJGrad_GaussGrad_values.append(LJGrad + GaussGrad)
         r_values.append(r)
 
-        r = next_step(r, pairs, rcenters, eigenvectors, h, sigma, kbT, dt)
+        r = next_step(r, pairs, rcenters_pw, eigenvectors, h, sigma, kbT, dt)
         # print(trajectories4PCA.shape, r.shape)
         trajectories4PCA[i % NstepsDeposite, :] = r
         # print(trajectories4PCA)
@@ -560,6 +578,7 @@ def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT, ic_method='PCA'):
                 # print(selected_eigenvectors.shape, eigenvalues.shape)
                 # print(f'mean_vector.shape 2: {mean_vector.shape}')
                 rcenters = mean_vector
+                rcenters_pw = np.array([get_pairwise_distances(rcenters, pairs)])
                 # print(f'rcenters.shape 2: {rcenters.shape}')
                 # TODO: should this be using the GS eigenvectors??
                 eigenvectors = np.expand_dims(selected_eigenvectors, axis=0)
@@ -568,7 +587,7 @@ def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT, ic_method='PCA'):
                 trajectories4PCA = np.zeros((NstepsDeposite, 1, M))
 
                 LJ_center_values.append(LJpotential(mean_vector))
-                Gauss_center_values.append(SumGuassian(mean_vector, pairs, rcenters, eigenvectors, h, sigma, unsummed=True))
+                Gauss_center_values.append(SumGuassian(mean_vector, pairs, rcenters_pw, eigenvectors, h, sigma, unsummed=True))
             else:
                 ### conducting PCA ###
                 data = trajectories4PCA
@@ -581,6 +600,7 @@ def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT, ic_method='PCA'):
 
                 # print(f'mean_vector.shape 3: {mean_vector.shape}')
                 rcenters = np.concatenate([rcenters, mean_vector], axis=0)
+                rcenters_pw = np.concatenate([rcenters_pw, np.array([get_pairwise_distances(mean_vector, pairs)])], axis=0)
                 # print(f'rcenters.shape 3: {rcenters.shape}')
                 eigenvectors = np.concatenate([eigenvectors, np.expand_dims(selected_eigenvectors, axis=0)], axis=0)
                 # print(rcenters.shape, eigenvectors.shape)
@@ -593,7 +613,7 @@ def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT, ic_method='PCA'):
                 trajectories4PCA = np.zeros((NstepsDeposite, 1, M))
 
                 LJ_center_values.append(LJpotential(mean_vector))
-                Gauss_center_values.append(SumGuassian(mean_vector, pairs, rcenters, eigenvectors, h, sigma))
+                Gauss_center_values.append(SumGuassian(mean_vector, pairs, rcenters_pw, eigenvectors, h, sigma))
 
     analyze_means(rcenters)
     # analyze_dist_gauss(Gauss_v_dist_values)
@@ -611,17 +631,17 @@ def next_LD(r, dt, kbT):
 
     return rnew
 
-def next_LD_Gaussian(r, dt, pairs, rcenters, eigenvectors, h, sigma, kbT):
-    rnew = r - (GradLJpotential(r) + GradGuassian(r, pairs, rcenters, eigenvectors, h, sigma)) * dt + np.sqrt(2 * dt * kbT) * np.random.randn(*r.shape)
+def next_LD_Gaussian(r, dt, pairs, rcenters_pw, eigenvectors, h, sigma, kbT):
+    rnew = r - (GradLJpotential(r) + GradGuassian(r, pairs, rcenters_pw, eigenvectors, h, sigma)) * dt + np.sqrt(2 * dt * kbT) * np.random.randn(*r.shape)
 
     return rnew
 
-def next_step(r, pairs, rcenters, eigenvectors, h, sigma, kbT, dt):
+def next_step(r, pairs, rcenters_pw, eigenvectors, h, sigma, kbT, dt):
 
-    if rcenters is None:
+    if rcenters_pw is None:
         r = next_LD(r, dt, kbT)
     else:
-        r = next_LD_Gaussian(r, dt, pairs, rcenters, eigenvectors, h, sigma, kbT)
+        r = next_LD_Gaussian(r, dt, pairs, rcenters_pw, eigenvectors, h, sigma, kbT)
         # r, rcenters, eigenvectors = rotate_all_to_principal_axes(r, rcenters, eigenvectors)
     return r
 
@@ -818,13 +838,13 @@ dt = 0.001
 # h = 1
 # sigma = 1
 
-# This seemed to work well for 3 atoms with the COM/MOI symmetry reduction strategy
-T = 30
+# [CHANGED now] This seemed to work well for 3 atoms with the COM/MOI symmetry reduction strategy
+T = 10
 Tdeposite = 0.05    # time until place gaussian
 dt = 0.001
-h = 0.1         # height
-sigma = 0.1     # stdev
-kbT = 0.01    # 0.0001 seems to work??
+h = 0.01         # height
+sigma = 0.001     # stdev
+kbT = 0.0001    # 0.0001 gives a y range of -5.99997 to -5.99898
 
 ten_atom_init = [   [-0.112678561569957,   1.154350068036701,  -0.194840194577019],
                     [0.455529927957375,  -0.141698933988423,   1.074987039970359],
@@ -846,7 +866,10 @@ three_atom_init = [ [0.4391356726,        0.1106588251,       -0.4635601962],
                     [-0.5185079933,        0.3850176090,        0.0537084789],
                     [0.0793723207,       -0.4956764341,        0.4098517173]]
 
+time1 = time.time()
 LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT, ic_method='PCA')
+time2 = time.time()
+print(f'Total time: {time2-time1}')
 # LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT, ic_method='PCA')
 
 # N = 1

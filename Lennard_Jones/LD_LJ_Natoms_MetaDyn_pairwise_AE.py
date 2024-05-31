@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 import jax.scipy as jscipy
 from jax import vmap
+import os
 import tensorflow as tf
 from tensorflow.keras import Sequential
 from tensorflow.keras.layers import Input, Dense
@@ -228,7 +229,7 @@ def SumGaussianPW_single(pw_x, pw_center, eigenvectors, orth_eigenvectors, h, si
     return exps * envelope_exps  # scalar
 
 @jax.jit
-def JSumGaussianPW(pw_x, pw_centers, eigenvectors, orth_eigenvectors, h, sigma, unsummed=False):
+def JSumGaussianPW(pw_x, pw_centers, eigenvectors, orth_eigenvectors, h, sigma):
     # x: 1 * M
     # centers: N * M
     # eigenvectors: N * M * k
@@ -246,10 +247,27 @@ def JSumGaussianPW(pw_x, pw_centers, eigenvectors, orth_eigenvectors, h, sigma, 
     # TODO: variable sigma's dependent on the size of the eigenvalue. Larger eigenvalue = larger Gaussian
     # NEED that as it might potentially help the AE specifically
 
-    if unsummed:
-        return total_bias
-    else:
-        return jnp.sum(total_bias)  # scalar
+    return jnp.sum(total_bias)  # scalar
+
+def JSumGaussianPWUnsummed(pw_x, pw_centers, eigenvectors, orth_eigenvectors, h, sigma):
+    # x: 1 * M
+    # centers: N * M
+    # eigenvectors: N * M * k
+    # orth_eigenvectors: N * M * k
+    env_sigma = sigma
+
+    # Vectorize the single computation over the batch dimension N
+    vmap_sum_gaussian_pw = vmap(SumGaussianPW_single, in_axes=(None, 0, 0, 0, None, None, None))
+
+    total_bias = vmap_sum_gaussian_pw(pw_x, pw_centers, eigenvectors, orth_eigenvectors, h, sigma, env_sigma)  # N
+
+    # TODO??: Normalize AND plot the size of normalization factor
+    # Track the new sigma values that we calculate and use that for all calcs
+
+    # TODO: variable sigma's dependent on the size of the eigenvalue. Larger eigenvalue = larger Gaussian
+    # NEED that as it might potentially help the AE specifically
+
+    return total_bias
 
 def SumGaussianPW(pw_x, pw_centers, eigenvectors, orth_eigenvectors, h, sigma, unsummed=False):
     env_sigma = sigma
@@ -311,7 +329,10 @@ def JSumGaussian(x, centers_pw, eigenvectors, orth_eigenvectors, h, sigma, unsum
     pw_x = jnp.array([Jget_pairwise_distances(x)])   # 1 * D
     pw_centers = jnp.array(centers_pw)                      # N * D
 
-    return JSumGaussianPW(pw_x, pw_centers, eigenvectors, orth_eigenvectors, h, sigma, unsummed)
+    if unsummed:
+        return JSumGaussianPWUnsummed(pw_x, pw_centers, eigenvectors, orth_eigenvectors, h, sigma)
+
+    return JSumGaussianPW(pw_x, pw_centers, eigenvectors, orth_eigenvectors, h, sigma)
 
 jax_SumGaussianPW = jax.grad(JSumGaussianPW)
 jax_SumGaussianPW_jit = jax.jit(jax_SumGaussianPW)
@@ -386,8 +407,20 @@ def DistSumGaussian(x, centers_pw, eigenvectors, orth_eigenvectors, h, sigma):
 
 def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT, ic_method='PCA'):
     # M: dim
-    r = np.random.randn(1, M)*1
 
+    parameters = {
+        'M': M,
+        'T': T,
+        'Tdeposite': Tdeposite,
+        'dt': dt,
+        'h': h,
+        'sigma': sigma,
+        'kbT': kbT,
+        'ic_method': ic_method
+    }
+
+    # Initialization
+    r = np.random.randn(1, M)*1
     if M == 30:
         r = np.reshape(ten_atom_init, (1,30))
 
@@ -422,7 +455,6 @@ def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT, ic_method='PCA'):
     Gauss_center_values = []
 
     for i in tqdm(range(Nsteps)):
-        time1 = time.time()
         print(LJpotential(r))
 
         LJpot = LJpotential(r)
@@ -490,15 +522,37 @@ def LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT, ic_method='PCA'):
                 LJ_center_values.append(LJpotential(mean_vector))
                 Gauss_center_values.append(JSumGaussian(mean_vector, rcenters_pw, eigenvectors, orth_eigenvectors, h, sigma))
 
-    analyze_means(rcenters)
+    save_data(r_values, rcenters, eigenvectors, LJ_values, Gauss_values, Gauss_v_dist_values, LJGrad_values, GaussGrad_values, Gauss_center_values, LJ_center_values, parameters)
+
+    # analyze_means(rcenters)
     # analyze_dist_gauss(Gauss_v_dist_values)
-    analyze_iter_gauss(Gauss_v_dist_values)
-    analyze_LJ_potential(LJ_values, LJGrad_values, Gauss_values, GaussGrad_values, LJ_Gauss_values, LJGrad_GaussGrad_values)
-    if M == 9:
-        # show_trajectory_plot(np.array(r_values).reshape((len(r_values), 9)), LJ_values, Gauss_values)
-        show_trajectory_plot(rcenters, np.array(LJ_center_values), np.reshape(np.array(Gauss_center_values), (len(Gauss_center_values))))
+    # analyze_iter_gauss(Gauss_v_dist_values)
+    # analyze_LJ_potential(LJ_values, LJGrad_values, Gauss_values, GaussGrad_values, LJ_Gauss_values, LJGrad_GaussGrad_values)
+    # if M == 9:
+    #     # show_trajectory_plot(np.array(r_values).reshape((len(r_values), 9)), LJ_values, Gauss_values)
+    #     show_trajectory_plot(rcenters, np.array(LJ_center_values), np.reshape(np.array(Gauss_center_values), (len(Gauss_center_values))))
 
     return None
+
+def save_data(r_values, rcenters, eigenvectors, LJ_values, Gauss_values, Gauss_v_dist_values, LJGrad_values, GaussGrad_values, Gauss_center_values, LJ_center_values, parameters):
+    # Directory to save the data to
+    # Get the run number and update it
+    run_number_file = 'run_number.txt'
+    with open(run_number_file, 'r') as f:
+        run_number = int(f.read().strip())
+    run_number += 1
+    with open(run_number_file, 'w') as f:
+        f.write(str(run_number))
+    # Create a new directory for the current run
+    run_dir = os.path.join('simulation_runs', f'run_{run_number}')
+    os.makedirs(run_dir)
+
+    np.savez(os.path.join(run_dir, 'trajectory.npz'), r_values=r_values)
+    np.savez(os.path.join(run_dir, 'gaussians.npz'), rcenters=rcenters, eigenvectors=eigenvectors)
+    np.savez(os.path.join(run_dir, 'traj_energies.npz'), LJ_values=LJ_values, Gauss_values=Gauss_values, Gauss_v_dist_values=np.array(Gauss_v_dist_values, dtype=object))
+    np.savez(os.path.join(run_dir, 'traj_gradients.npz'), LJGrad_values=LJGrad_values, GaussGrad_values=GaussGrad_values)
+    np.savez(os.path.join(run_dir, 'center_energies.npz'), Gauss_center_values=np.array(Gauss_center_values, dtype=object), LJ_center_values=LJ_center_values)
+    np.savez(os.path.join(run_dir, 'parameters.npz'), parameters=np.array(parameters, dtype=object))
 
 def next_LD(r, dt, kbT):
 

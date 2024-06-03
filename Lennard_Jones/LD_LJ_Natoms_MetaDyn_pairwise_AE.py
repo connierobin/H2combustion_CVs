@@ -547,12 +547,19 @@ def save_data(r_values, rcenters, eigenvectors, LJ_values, Gauss_values, Gauss_v
     run_dir = os.path.join('simulation_runs', f'run_{run_number}')
     os.makedirs(run_dir)
 
-    np.savez(os.path.join(run_dir, 'trajectory.npz'), r_values=r_values)
-    np.savez(os.path.join(run_dir, 'gaussians.npz'), rcenters=rcenters, eigenvectors=eigenvectors)
-    np.savez(os.path.join(run_dir, 'traj_energies.npz'), LJ_values=LJ_values, Gauss_values=Gauss_values, Gauss_v_dist_values=np.array(Gauss_v_dist_values, dtype=object))
-    np.savez(os.path.join(run_dir, 'traj_gradients.npz'), LJGrad_values=LJGrad_values, GaussGrad_values=GaussGrad_values)
-    np.savez(os.path.join(run_dir, 'center_energies.npz'), Gauss_center_values=np.array(Gauss_center_values, dtype=object), LJ_center_values=LJ_center_values)
-    np.savez(os.path.join(run_dir, 'parameters.npz'), parameters=np.array(parameters, dtype=object))
+    np.savez(os.path.join(run_dir, 'data.npz'), 
+             r_values=r_values,
+             rcenters=rcenters, 
+             eigenvectors=eigenvectors,
+             LJ_values=LJ_values, 
+             Gauss_values=Gauss_values, 
+             Gauss_v_dist_values=np.array(Gauss_v_dist_values, dtype=object),
+             LJGrad_values=LJGrad_values, 
+             GaussGrad_values=GaussGrad_values,
+             Gauss_center_values=np.array(Gauss_center_values, dtype=object), 
+             LJ_center_values=LJ_center_values,
+             parameters=np.array(parameters, dtype=object)
+             )
 
 def next_LD(r, dt, kbT):
 
@@ -762,7 +769,7 @@ dt = 0.001
 # sigma = 1
 
 # [CHANGED now] This seemed to work well for 3 atoms with the COM/MOI symmetry reduction strategy
-T = 1
+T = 10
 Tdeposite = 0.05    # time until place gaussian
 dt = 0.001
 h = 0.01         # height

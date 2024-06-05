@@ -772,9 +772,9 @@ dt = 0.001
 T = 10
 Tdeposite = 0.05    # time until place gaussian
 dt = 0.001
-h = 0.01         # height
-sigma = 0.001     # stdev
-kbT = 0.0001    # 0.0001 gives a y range of -5.99997 to -5.99898
+h = 1.0         # height
+sigma = 0.1     # stdev
+kbT = 0.01    # 0.0001 gives a y range of -5.99997 to -5.99898
 
 ten_atom_init = [   [-0.112678561569957,   1.154350068036701,  -0.194840194577019],
                     [0.455529927957375,  -0.141698933988423,   1.074987039970359],

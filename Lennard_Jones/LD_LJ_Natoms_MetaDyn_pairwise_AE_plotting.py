@@ -317,34 +317,11 @@ def show_2D_trajectory(r_values):
     colors = np.linspace(0, 1, N)
 
     # Plot the data points with color representing their order
-    plt.scatter(data[:, 0], data[:, 1], c=colors, cmap='viridis', edgecolor='k')
-
-    # Create a mesh grid for plotting the background energy surface
-    buffer = 0.0
-    x_min, x_max = data[:, 0].min() - buffer, data[:, 0].max() + buffer
-    y_min, y_max = data[:, 1].min() - buffer, data[:, 1].max() + buffer
-    xx, yy = np.meshgrid(np.linspace(x_min, x_max, 100), np.linspace(y_min, y_max, 100))
-
-    # Transform the mesh grid points using the eigenvectors
-    concatenated_points = np.c_[xx.ravel(), yy.ravel()]
-    print(concatenated_points.shape)
-    print(selected_eigenvectors.T.shape)
-    grid_points = np.dot(np.c_[xx.ravel(), yy.ravel()], selected_eigenvectors.T)
-    print(grid_points.shape)
-    print(grid_points[0].shape)
-
-    # Calculate the energy potential at each grid point
-    zz = np.array([LJpotential(np.expand_dims(point,0)) for point in grid_points]).reshape(xx.shape)
-
-    # Plot the energy potential surface
-    plt.contourf(xx, yy, zz, levels=50, cmap='coolwarm', alpha=0.6)
-
-    # Add colorbar for the energy surface
-    plt.colorbar(label='Energy Potential')
+    plt.scatter(projected_data[:, 0], projected_data[:, 1], c=colors, cmap='viridis', edgecolor='k')
 
     # Add labels and title
-    plt.xlabel('X-axis')
-    plt.ylabel('Y-axis')
+    plt.xlabel('PCA 1')
+    plt.ylabel('PCA 2')
     plt.title('2D Plot of Data Points with Energy Potential Background')
 
     # Show the plot
@@ -352,14 +329,15 @@ def show_2D_trajectory(r_values):
 
 def show_2D_pairwise_trajectory(r_values):
     # Calculate main PCA vectors of the entire trajectory
-    mean_vector, selected_eigenvectors = PCA(r_values)
+    data_pw = np.array([np.array(get_pairwise_distances(r_values[i])).flatten() for i in range(len(r_values))])
+    mean_vector, selected_eigenvectors = PCA(data_pw)
     # Project trajectory onto the top 2 evecs -- be careful!
 
 
 
 
 # Set to the desired run number
-run_number = 1
+run_number = 4
 simulation_data = load_simulation_data(run_number)
 
 # Print loaded data keys to verify
@@ -384,8 +362,8 @@ LJGrad_GaussGrad_values = LJGrad_values + GaussGrad_values
 show_2D_trajectory(r_values)
 # analyze_means(rcenters)
 # analyze_dist_gauss(Gauss_v_dist_values)
-# analyze_iter_gauss(Gauss_v_dist_values)
-# analyze_LJ_potential(LJ_values, LJGrad_values, Gauss_values, GaussGrad_values, LJ_Gauss_values, LJGrad_GaussGrad_values)
+analyze_iter_gauss(Gauss_v_dist_values)
+analyze_LJ_potential(LJ_values, LJGrad_values, Gauss_values, GaussGrad_values, LJ_Gauss_values, LJGrad_GaussGrad_values)
 # if parameters['M'] == 9:
 #     # show_trajectory_plot(np.array(r_values).reshape((len(r_values), 9)), LJ_values, Gauss_values)
 #     show_trajectory_plot(rcenters, np.array(LJ_center_values), np.reshape(np.array(Gauss_center_values), (len(Gauss_center_values))))

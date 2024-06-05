@@ -195,7 +195,6 @@ if __name__ == '__main__':
     xx = np.linspace(-10, 10, 200)
     yy = np.linspace(-25, 25, 200)
     [X, Y] = np.meshgrid(xx, yy)  # 100*100
-    N = np.zeros((n))
     W = potential(X, Y, np.zeros(n))
     W1 = W.copy()
     W1[W > 5] = float('nan')
@@ -239,7 +238,8 @@ if __name__ == '__main__':
     #     print(str(i) + ' compoenent dev: ', (GaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma) - V0)/eps)
 
     # TODO: basically just guessing with how N should work...
-    Gs = GaussiansPCA(np.concatenate([X.reshape(-1, 1), Y.reshape(-1, 1), N.reshape(-1, 1)], axis=1), qs, eigenvectors, choose_eigenvalue, height=height,
+    num_points = X.shape[0]*X.shape[1]
+    Gs = GaussiansPCA(np.concatenate([X.reshape(-1, 1), Y.reshape(-1, 1), np.expand_dims(np.zeros(num_points), axis=1)], axis=1), qs, eigenvectors, choose_eigenvalue, height=height,
                       sigma=sigma)
     ax2 = fig.add_subplot(1, 3, 2)
     Sum = Gs.reshape(200, 200)+W1

@@ -2,6 +2,7 @@ import sys
 
 from matplotlib import pyplot as plt
 import numpy as np
+import numpy.linalg as la
 
 import ase
 from ase import Atoms
@@ -14,8 +15,8 @@ from tensorflow.keras import Sequential
 from tensorflow.keras.layers import Input, Dense
 from tensorflow.keras.models import Model
 
-from combust.utils.utility import check_data_consistency
-from combust.utils.utility import get_data_remove_appended_zero
+# from combust.utils.utility import check_data_consistency
+# from combust.utils.utility import get_data_remove_appended_zero
 
 atom_with_number = ['N/A', 'H', 'He', 'Li', 'Be', 'B', 'C', 'N', 'O', 'F']
 
@@ -33,14 +34,17 @@ def load_data(path_npz):
     data = np.load(path_npz)
 
     # check consistency of data arrays shape
-    check_data_consistency(data)
+
+    # check_data_consistency(data)
+
     print(f"{path_npz} number of data points: {data['Z'].shape[0]}")
 
     # # get data corresponding to reaction
     # data = get_data_subset(data, rxn_num[3:])
 
     # # remove appended zero to data arrays
-    data = get_data_remove_appended_zero(data)
+
+    # data = get_data_remove_appended_zero(data)
 
     # get unique reaction numbers included in data
     rxn_nums = np.unique(data['RXN'])
@@ -296,13 +300,51 @@ def run_ae(data):
     ae_means = encoded_base_vectors.mean(axis=0)    # Don't want this???
     ae_comps = encoded_base_vectors.T[:,0:input_dim]
 
+    ae_comp_norms = la.norm(ae_comps.T, axis=0)
+
+    # NEW STUFF added to make plots for the Symposium
+
+    mean_vector = np.mean(data, axis=0, keepdims=True)
+
+    ae_comps_normalized = (ae_comps / ae_comp_norms[:, np.newaxis]).T
+
+    centered_data = (data - mean_vector)
+    covariance_matrix = np.cov(centered_data, rowvar=False)
+    ae_variance = np.array([np.dot(ae_comps_normalized[:, i], np.dot(covariance_matrix, ae_comps_normalized[:, i]))for i in range(len(ae_comps_normalized[0]))])
+    sorted_indices = np.argsort(ae_variance)[::-1]
+    ae_variance = ae_variance[sorted_indices]
+    ae_comps_normalized = ae_comps_normalized[:, sorted_indices]
+
+    # Graham-Schmidt version
+    GS_eigenvectors = np.zeros((len(ae_comps_normalized), len(ae_comps_normalized[0])))
+    for i in range(len(ae_comps_normalized)):
+        cur_vec = ae_comps_normalized[i]
+        for j in range(i-1, -1, -1):
+            prev_vec = GS_eigenvectors[j]
+            # subtract the projection of cur_vec onto prev_vec
+            cur_vec = cur_vec - prev_vec * np.dot(cur_vec, prev_vec) / np.dot(prev_vec, prev_vec)
+        GS_eigenvectors[i] = cur_vec
+    GS_eigenvalues = np.array([np.dot(GS_eigenvectors[:, i], np.dot(covariance_matrix, GS_eigenvectors[:, i]))for i in range(len(GS_eigenvectors[0]))])
+    sorted_indices = np.argsort(GS_eigenvalues)[::-1]
+    GS_eigenvalues = GS_eigenvalues[sorted_indices]
+    GS_eigenvectors = GS_eigenvectors[:, sorted_indices]
+    ae_variance = ae_variance[sorted_indices]
+    ae_comps_normalized = ae_comps_normalized[:, sorted_indices]
+
+    print(ae_comps)
+    print(ae_comps_normalized)
+    print(GS_eigenvectors)  # APPEARS TO NOT BE WORKING! G-S looks like it is failing at 0's
+
     return ae_means, ae_comps
+    # return ae_means, ae_comps_normalized.T
+    # return ae_means, GS_eigenvectors
 
 def test_3_atom():
-    data = load_data('../01_aimd.npz')
+    data = load_data('../../01_aimd.npz')
     inv_data = convert_to_invariant_dists(data)
 
     atom_names = [atom_with_number[int(z)] for z in data['Z'][0]]
+    print(atom_names)
     pair_names = [f'{a}-{b}' for idx, a in enumerate(atom_names) for b in atom_names[idx + 1:]]
     
     example_data = {'R': np.array([[[2,1,0], [1,1,-1], [1,2,1]]])}
@@ -312,7 +354,7 @@ def test_3_atom():
     partitioned_data = np.array_split(inv_data, 100)
 
     # choose one set of 100 data points to test on that isn't just the first one
-    test_data = partitioned_data[2]
+    test_data = partitioned_data[9]
     # test_data = example_data['R'][0]
 
     # NOTE: Connie confirmed that Senwei's PCA results in the same vector (including magnitude) as the scikit-learn PCA. 

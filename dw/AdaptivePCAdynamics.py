@@ -3,16 +3,18 @@ import matplotlib.pyplot as plt
 import argparse
 from tqdm import tqdm
 
-def potential(qx, qy):
-    V = 0.1*(qy +0.1*qx**3)**2 + 2*np.exp(-qx**2) + (qx**2+qy**2)/36
+def potential(qx, qy, qn):
+    V = 0.1*(qy +0.1*qx**3)**2 + 2*np.exp(-qx**2) + (qx**2+qy**2)/36 + np.sum(qn**2)/36
     return V
 
 def gradV(q):
     qx = q[:, 0:1]
     qy = q[:, 1:2]
+    qn = q[:, 2:]
     Vx = 0.1*2*(qy +0.1*qx**3)*3*0.1*qx**2 - 2*qx*2*np.exp(-qx**2) + 2*qx/36
     Vy = 0.1*2*(qy +0.1*qx**3) + 2*qy/36
-    return np.concatenate((Vx, Vy), axis=1)
+    Vn = 2*qn/36
+    return np.concatenate((Vx, Vy, Vn), axis=1)
 
 
 def PCA(data):  # datasize: N * dim
@@ -102,14 +104,14 @@ def gradGaussians(q, qs, eigenvectors, choose_eigenvalue, height, sigma):
     return grad#np.concatenate((Gs_x, Gs_y), axis=1)
 
 
-def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0):
+def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, n=0):
     Nsteps = int(T / dt)
     NstepsDeposite = int(Tdeposite / dt)
-    trajectories = np.zeros((Nsteps + 1, q0.shape[0], 2))
+    trajectories = np.zeros((Nsteps + 1, q0.shape[0], 2 + n))
 
     print(trajectories.shape)
 
-    variance = 0.7
+    variance = 0.7  # Threshhold for choosing number of eigenvectors
     q = q0
 
     qs = None
@@ -134,7 +136,7 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0):
                 save_eigenvalues = np.expand_dims(eigenvalues, axis=0)
 
                 eigenvalues = np.expand_dims(eigenvalues, axis=0)
-                choose_eigenvalue_tmp = np.zeros((1, 2))
+                choose_eigenvalue_tmp = np.zeros((1, 2 + n))
                 cumsum = np.cumsum(eigenvalues, axis=1)
                 var_ratio = cumsum / np.sum(save_eigenvalues)
                 idx = np.argmax(var_ratio > variance)
@@ -155,7 +157,7 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0):
                 save_eigenvalues = np.concatenate([save_eigenvalues, np.expand_dims(eigenvalues, axis=0)], axis=0)
 
                 eigenvalues = np.expand_dims(eigenvalues, axis=0)
-                choose_eigenvalue_tmp = np.zeros((1, 2))
+                choose_eigenvalue_tmp = np.zeros((1, 2 + n))
                 cumsum = np.cumsum(eigenvalues, axis=1)
                 var_ratio = cumsum / np.sum(eigenvalues)
                 idx = np.argmax(var_ratio > variance)
@@ -187,10 +189,14 @@ if __name__ == '__main__':
     parser.add_argument('--trial', type=int, default=0)
     args = parser.parse_args()
 
+    # number of extra dimensions
+    n = 8
+
     xx = np.linspace(-10, 10, 200)
     yy = np.linspace(-25, 25, 200)
     [X, Y] = np.meshgrid(xx, yy)  # 100*100
-    W = potential(X, Y)
+    N = np.zeros((n))
+    W = potential(X, Y, np.zeros(n))
     W1 = W.copy()
     W1[W > 5] = float('nan')
 
@@ -212,8 +218,8 @@ if __name__ == '__main__':
 
 
     for i in range(1):
-        q0 = np.array([[-5.0, 12.0]])
-        trajectory, qs, eigenvectors, eigenvalues, choose_eigenvalue = MD(q0, T, Tdeposite=Tdeposite, height=height, sigma=sigma, dt=dt, beta=beta)  # (steps, bs, dim)
+        q0 = np.concatenate((np.array([[-5.0, 12.0]]), np.array([np.random.rand(8)*40-20])), axis=1)
+        trajectory, qs, eigenvectors, eigenvalues, choose_eigenvalue = MD(q0, T, Tdeposite=Tdeposite, height=height, sigma=sigma, dt=dt, beta=beta, n=n)  # (steps, bs, dim)
         print(eigenvalues.shape)
         indices = np.arange(trajectory.shape[0])
         ax1.scatter(trajectory[:, 0, 0], trajectory[:, 0, 1], c=indices, cmap=cmap)
@@ -232,7 +238,8 @@ if __name__ == '__main__':
     #     print(q0, q)
     #     print(str(i) + ' compoenent dev: ', (GaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma) - V0)/eps)
 
-    Gs = GaussiansPCA(np.concatenate([X.reshape(-1, 1), Y.reshape(-1, 1)], axis=1), qs, eigenvectors, choose_eigenvalue, height=height,
+    # TODO: basically just guessing with how N should work...
+    Gs = GaussiansPCA(np.concatenate([X.reshape(-1, 1), Y.reshape(-1, 1), N.reshape(-1, 1)], axis=1), qs, eigenvectors, choose_eigenvalue, height=height,
                       sigma=sigma)
     ax2 = fig.add_subplot(1, 3, 2)
     Sum = Gs.reshape(200, 200)+W1

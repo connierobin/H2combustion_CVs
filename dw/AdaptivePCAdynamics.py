@@ -452,5 +452,5 @@ if __name__ == '__main__':
     cnf3 = ax3.contourf(X, Y, Sum, levels=29)
 
     # fig.colorbar(contourf_)
-    plt.title('Local PCA dynamics')
+    plt.title('Local {ic_method} dynamics')
     plt.show()

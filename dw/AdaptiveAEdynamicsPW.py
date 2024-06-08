@@ -11,10 +11,12 @@ import jax
 import jax.numpy as jnp
 import jax.scipy as jscipy
 from jax import vmap
-from functools import partial
 
 # List to store models
 global_models = []
+
+# dimension the particles live in
+d = 1
 
 def potential(qx, qy, qn):
     V = 0.1*(qy +0.1*qx**3)**2 + 2*np.exp(-qx**2) + (qx**2+qy**2)/36 + np.sum(qn**2)/36
@@ -29,6 +31,18 @@ def gradV(q):
     Vy = 0.1*2*(qy +0.1*qx**3) + 2*qy/36
     Vn = 2*qn/36
     return np.concatenate((Vx, Vy, Vn), axis=1)
+
+
+def Jget_pairwise_distances(x):
+    Natoms = int(x.shape[-1] / d)
+    x = jnp.reshape(x, (Natoms, d))
+    all_diffs = jnp.expand_dims(x, axis=1) - jnp.expand_dims(x, axis=0) # N * N * M
+    sq_diffs = jnp.power(all_diffs, 2.)
+    sum_sq_diffs = jnp.sum(sq_diffs, axis=-1)
+    pairwise_distances = jnp.sqrt(sum_sq_diffs) # N * N
+    pairwise_distances = pairwise_distances[jnp.triu_indices(Natoms, 1)]
+
+    return pairwise_distances
 
 
 def AE(data):
@@ -73,7 +87,7 @@ def AE(data):
 
 # what is this function doing?? Is this like SumGaussians?
 @jax.jit
-def Gaussians(q, qs, height, sigma):
+def GaussiansPW(q, qs, height, sigma):
 
     V = np.empty((q.shape[0], 1))
     for i in range(q.shape[0]):
@@ -95,31 +109,28 @@ def Gaussians(q, qs, height, sigma):
     return V
 
 # NOTE: eliminated envelope gaussians
-# @partial(jax.jit, static_argnums=(2,))
-def SumGaussian_single(x, center, i, h, sigma):
-    x_minus_center = x - center  # D
+def SumGaussianPW_single(pw_x, pw_center, i, h, sigma):
+    pw_x_minus_center = pw_x - pw_center  # D
     # pw_x_projected = jnp.matmul(pw_x_minus_center, eigenvectors)  # k
     global_autoencoder = global_models[i]
     encoder = Model(global_autoencoder.input, global_autoencoder.layers[2].output)
-    x_projected = encoder.predict(x_minus_center)
-    x_projected_sq_sum = jnp.sum(x_projected**2)  # scalar
+    pw_x_projected = encoder.predict(pw_x_minus_center)
+    pw_x_projected_sq_sum = jnp.sum(pw_x_projected**2)  # scalar
 
-    exps = h * jnp.exp(-x_projected_sq_sum / (2 * sigma**2))  # scalar
+    exps = h * jnp.exp(-pw_x_projected_sq_sum / (2 * sigma**2))  # scalar
 
     return exps  # scalar
 
 @jax.jit
-def JSumGaussian(x, centers, h, sigma):
+def JSumGaussianPW(pw_x, pw_centers, h, sigma):
     # x: 1 * M
     # centers: N * M
-    i = jax.lax.iota(dtype=int, size=centers.shape[0])
-    print(f'i.shape: {i.shape}')
-    print(f'centers.shape: {centers.shape}')
+    i = np.arange(0, pw_centers.shape[0], 1, dtype=int)
 
     # Vectorize the single computation over the batch dimension N
-    vmap_sum_gaussian = vmap(SumGaussian_single, in_axes=(None, 0, 0, None, None))
+    vmap_sum_gaussian_pw = vmap(SumGaussianPW_single, in_axes=(None, 0, 0, None, None))
 
-    total_bias = vmap_sum_gaussian(x, centers, i, h, sigma)  # N
+    total_bias = vmap_sum_gaussian_pw(pw_x, pw_centers, i, h, sigma)  # N
 
     # TODO??: Normalize AND plot the size of normalization factor
     # Track the new sigma values that we calculate and use that for all calcs
@@ -129,20 +140,42 @@ def JSumGaussian(x, centers, h, sigma):
 
     return jnp.sum(total_bias)  # scalar
 
-jax_SumGaussian = jax.grad(JSumGaussian)
-jax_SumGaussian_jit = jax.jit(jax_SumGaussian)
+jax_SumGaussianPW = jax.grad(JSumGaussianPW)
+jax_SumGaussianPW_jit = jax.jit(jax_SumGaussianPW)
 
-def GradGaussian(x, centers, h, sigma):
+def GradGaussian(x, centers_pw, h, sigma):
     # print(f'jax_SumGaussianPW_jit._cache_size: {jax_VSumGaussianPW_jit._cache_size()}')
     print(f'x.shape: {x.shape}')
-    # pw_x_jnp = jnp.array([Jget_pairwise_distances(x)])   # 1 * D
-    # centers_jnp = centers                                 # N * D
-    x_jnp = jnp.array(x)
-    centers_jnp = jnp.array(centers)
+    pw_x_jnp = jnp.array([Jget_pairwise_distances(x)])   # 1 * D
+    pw_centers_jnp = centers_pw                                 # N * D
 
-    grad = jax_SumGaussian_jit(x_jnp, centers_jnp, h, sigma)
+    pw_grad = jax_SumGaussianPW_jit(pw_x_jnp, pw_centers_jnp, h, sigma)
 
-    return grad
+    # TODO: test that the below code is correct
+    N = pw_grad.shape[0]
+    M = x.shape[-1]
+    Natoms = int(M / 3)
+    D = int(Natoms * (Natoms - 1) / 2)
+
+    x_grad = np.zeros((Natoms, 3))
+    x_vals = np.reshape(x, (Natoms, 3))
+
+    # TODO: sanity check the signs
+
+    iu = np.triu_indices(Natoms, 1)
+    for k in range(N):
+        for l in range(D):
+            # for j in range(i):
+            i = iu[0][l]
+            j = iu[1][l]
+            rij = pw_x_jnp[0][l] if (pw_x_jnp[0][l] != 0) else 0.000001
+            update_vec = pw_grad[k][l] * (x_vals[j] - x_vals[i]) / rij
+            x_grad[i] -= update_vec
+            x_grad[j] += update_vec
+
+    x_grad = x_grad.flatten()   # M
+
+    return x_grad
 
 
 def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, n=0):

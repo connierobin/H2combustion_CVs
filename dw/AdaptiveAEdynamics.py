@@ -12,9 +12,13 @@ import jax.numpy as jnp
 import jax.scipy as jscipy
 from jax import vmap
 from functools import partial
+import haiku as hk
+import optax
 
-# List to store models
-global_models = []
+
+# Global dimensionality of the system
+n = 8
+
 
 def potential(qx, qy, qn):
     V = 0.1*(qy +0.1*qx**3)**2 + 2*np.exp(-qx**2) + (qx**2+qy**2)/36 + np.sum(qn**2)/36
@@ -31,77 +35,111 @@ def gradV(q):
     return np.concatenate((Vx, Vy, Vn), axis=1)
 
 
-def AE(data):
-    global global_models
+# Define the autoencoder
+def autoencoder_fn(x):
+    input_dim = x.shape[-1]
+    intermediate_dim = 64
+    encoding_dim = 3
 
-    mean_vector = np.mean(data, axis=0, keepdims=True)
-    std_vector = np.std(data, axis=0, keepdims=True)
-    
-    input_dim = data.shape[1]
-    print(f'input dim: {input_dim}')
-    encoding_dim = 3 # Set the desired encoding dimension
-    intermediate_dim = 64 # Set the width of the intermediate layer
+    x = hk.Linear(intermediate_dim)(x)
+    x = jax.nn.relu(x)
+    x = hk.Linear(intermediate_dim)(x)
+    x = jax.nn.relu(x)
+    encoded = hk.Linear(encoding_dim)(x)
 
-    if len(global_models) > 0:
-        # Load the saved model if it exists
-        global_autoencoder = global_models[-1]
-        encoder = Model(global_autoencoder.input, global_autoencoder.layers[2].output)
+    x = hk.Linear(intermediate_dim)(encoded)
+    x = jax.nn.relu(x)
+    x = hk.Linear(intermediate_dim)(x)
+    x = jax.nn.relu(x)
+    decoded = jax.numpy.abs(hk.Linear(input_dim)(x))
+    return decoded, encoded
 
-    else:
-        # Define the Autoencoder architecture
-        input_layer = Input(shape=(input_dim,))
-        encoder = Sequential([Dense(intermediate_dim, activation='relu'),
-                            Dense(intermediate_dim, activation='relu'),
-                            Dense(encoding_dim)])
-        encoded = encoder(input_layer)
-        decoder = Sequential([Dense(intermediate_dim, activation='relu'),
-                            Dense(intermediate_dim, activation='relu'),
-                            Dense(input_dim)])
-        # NOTE: the absolute value is an important aspect of the decoder
-        decoded = tf.math.abs(decoder(encoded))
 
-        global_autoencoder = Model(input_layer, decoded)
-        global_autoencoder.compile(optimizer='adam', loss='mse')
+# Define the autoencoder globally
+autoencoder = hk.without_apply_rng(hk.transform(autoencoder_fn))
 
-    # Train the Autoencoder
-    global_autoencoder.fit(data, data, epochs=300, batch_size=32, shuffle=True, validation_split=0.2)
-    
-    # Save the model after training
-    global_models.append(global_autoencoder)
+# # Initialize the model
+# rng = jax.random.PRNGKey(42)
+# sample = jnp.ones([1, 2 + n])  # Example input shape
+# params = autoencoder.init(rng, sample)
 
-    return mean_vector
+# # Define optimizer
+# learning_rate = 1e-3
+# optimizer = optax.adam(learning_rate)
+# opt_state = optimizer.init(params)
 
-# what is this function doing?? Is this like SumGaussians?
-@jax.jit
-def Gaussians(q, qs, height, sigma):
+# # Register the optimizer state as a PyTree
+# def opt_state_flatten(opt_state):
+#     return (opt_state,), None
 
-    V = np.empty((q.shape[0], 1))
-    for i in range(q.shape[0]):
-        x_minus_centers = q[i:i + 1] - qs  # N * M
-        # x_minus_centers = np.expand_dims(x_minus_centers, axis=1)  # N * 1 * M
-        # x_projected = np.matmul(x_minus_centers, eigenvectors)
-        # x_projected_ = x_projected * choose_eigenvalue_
+# def opt_state_unflatten(aux_data, children):
+#     return children[0]
 
-        global_autoencoder = global_models[i]
-        encoder = Model(global_autoencoder.input, global_autoencoder.layers[2].output)
-        x_projected = encoder.predict(x_minus_centers)
+# jax.tree_util.register_pytree_node(
+#     optax.OptState,
+#     opt_state_flatten,
+#     opt_state_unflatten
+# )
 
-        print(f'x_projected.shape: {x_projected.shape}')
 
-        x_projected_sq_sum = np.sum((x_projected) ** 2, axis=(-2, -1))  # N
+def initialize_autoencoder(rng, sample):
+    params = autoencoder.init(rng, sample)
+    print("Params type:", type(params))
+    # print("Params structure:", params)
+    return params
 
-        V[i] = np.sum(height * np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2), axis=0)
 
-    return V
+def train_autoencoder(data, params, opt_state, optimizer, epochs=300, batch_size=32):
+    for epoch in range(epochs):
+        data = jax.random.permutation(jax.random.PRNGKey(epoch), data)
+        for i in range(0, len(data), batch_size):
+            batch = data[i:i + batch_size]
+            # Debug prints
+            # print(f'Params type before train_step: {type(params)}')
+            # print(f'Opt_state type before train_step: {type(opt_state)}')
+            # print(f'Optimizer type before train_step: {type(optimizer)}')
+            params, opt_state, loss = train_step(params, batch, opt_state, optimizer)
+        if epoch % 10 == 0:
+            print(f'Epoch {epoch}, Loss: {loss}')
+    return params, opt_state
+
+
+
+# TODO: figure out why jax doesn't like the optimizer being passed in. Maybe use a global? PyTree approach didn't seem to work
+# @jax.jit
+def train_step(params, x, opt_state, optimizer):
+    loss, grads = jax.value_and_grad(mse_loss)(params, x)
+    updates, opt_state = optimizer.update(grads, opt_state)
+    new_params = optax.apply_updates(params, updates)
+    return new_params, opt_state, loss
+
+
+def mse_loss(params, x):
+    decoded, _ = autoencoder.apply(params, x)
+    return jnp.mean((x - decoded) ** 2)
+
+
+def AE(data, params, opt_state, optimizer):
+    params, opt_state = train_autoencoder(data, params, opt_state, optimizer)
+    return params, opt_state
+
+
+def encode(params, x):
+    _, encoded = autoencoder.apply(params, x)
+    return encoded
+
+
 
 # NOTE: eliminated envelope gaussians
 # @partial(jax.jit, static_argnums=(2,))
-def SumGaussian_single(x, center, i, h, sigma):
+def SumGaussian_single(x, center, i, encoder_params_list, h, sigma):
     x_minus_center = x - center  # D
     # pw_x_projected = jnp.matmul(pw_x_minus_center, eigenvectors)  # k
-    global_autoencoder = global_models[i]
-    encoder = Model(global_autoencoder.input, global_autoencoder.layers[2].output)
-    x_projected = encoder.predict(x_minus_center)
+    # global_autoencoder = global_models[i]
+    encoder_params = encoder_params_list[i]  # Select the appropriate encoder parameters
+    # encoder = Model(global_autoencoder.input, global_autoencoder.layers[2].output)
+    # x_projected = encoder.predict(x_minus_center)
+    x_projected = encode(encoder_params, x_minus_center)
     x_projected_sq_sum = jnp.sum(x_projected**2)  # scalar
 
     exps = h * jnp.exp(-x_projected_sq_sum / (2 * sigma**2))  # scalar
@@ -109,7 +147,7 @@ def SumGaussian_single(x, center, i, h, sigma):
     return exps  # scalar
 
 @jax.jit
-def JSumGaussian(x, centers, h, sigma):
+def JSumGaussian(x, centers, encoder_params_list, h, sigma):
     # x: 1 * M
     # centers: N * M
     i = jax.lax.iota(dtype=int, size=centers.shape[0])
@@ -117,9 +155,9 @@ def JSumGaussian(x, centers, h, sigma):
     print(f'centers.shape: {centers.shape}')
 
     # Vectorize the single computation over the batch dimension N
-    vmap_sum_gaussian = vmap(SumGaussian_single, in_axes=(None, 0, 0, None, None))
+    vmap_sum_gaussian = vmap(SumGaussian_single, in_axes=(None, 0, 0, None, None, None))
 
-    total_bias = vmap_sum_gaussian(x, centers, i, h, sigma)  # N
+    total_bias = vmap_sum_gaussian(x, centers, i, encoder_params_list, h, sigma)  # N
 
     # TODO??: Normalize AND plot the size of normalization factor
     # Track the new sigma values that we calculate and use that for all calcs
@@ -132,15 +170,17 @@ def JSumGaussian(x, centers, h, sigma):
 jax_SumGaussian = jax.grad(JSumGaussian)
 jax_SumGaussian_jit = jax.jit(jax_SumGaussian)
 
-def GradGaussian(x, centers, h, sigma):
+def GradGaussian(x, centers, encoder_params_list, h, sigma):
     # print(f'jax_SumGaussianPW_jit._cache_size: {jax_VSumGaussianPW_jit._cache_size()}')
     print(f'x.shape: {x.shape}')
     # pw_x_jnp = jnp.array([Jget_pairwise_distances(x)])   # 1 * D
     # centers_jnp = centers                                 # N * D
     x_jnp = jnp.array(x)
     centers_jnp = jnp.array(centers)
+    # encoder_params_list_jnp = jnp.array(encoder_params_list)
+    # TODO: also convert encoder_params_list to a jnp thing??
 
-    grad = jax_SumGaussian_jit(x_jnp, centers_jnp, h, sigma)
+    grad = jax_SumGaussian_jit(x_jnp, centers_jnp, encoder_params_list, h, sigma)
 
     return grad
 
@@ -150,17 +190,41 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, n=0):
     NstepsDeposite = int(Tdeposite / dt)
     trajectories = np.zeros((Nsteps + 1, q0.shape[0], 2 + n))
 
-    print(trajectories.shape)
-
-    variance = 0.7  # Threshhold for choosing number of eigenvectors
+    # variance = 0.7  # Threshhold for choosing number of eigenvectors
     q = q0
-
     qs = None
+
+
+    # Sample data for initialization
+    sample = jnp.ones((1, 2 + n))
+
+    # Initialize the autoencoder
+    rng = jax.random.PRNGKey(42)
+    params = initialize_autoencoder(rng, sample)
+    encoder_params_list = [params]
+    
+    # Initialize the optimizer
+    optimizer = optax.adam(1e-3)
+    opt_state = optimizer.init(params)
+
+    # # Register the optimizer state as a PyTree
+    # def opt_state_flatten(opt_state):
+    #     return (opt_state,), None
+
+    # def opt_state_unflatten(aux_data, children):
+    #     return children[0]
+
+    # jax.tree_util.register_pytree_node(
+    #     optax.OptState,
+    #     opt_state_flatten,
+    #     opt_state_unflatten
+    # )
+
 
     for i in tqdm(range(Nsteps)):
 
         trajectories[i, :] = q
-        q = next_step(q, qs, height, sigma, dt, beta)
+        q = next_step(q, qs, encoder_params_list, height, sigma, dt, beta)
 
         if (i + 1) % NstepsDeposite == 0:
 
@@ -168,24 +232,28 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, n=0):
 
                 data = trajectories[:NstepsDeposite]  # (N_steps, 1, 2)
                 data = np.squeeze(data, axis=1)  # (100, 2)
-                mean_vector = AE(data)
+                mean_vector = np.mean(data, axis=0, keepdims=True)
+                params, opt_state = AE(data, params, opt_state, optimizer)
+                encoder_params_list[0] = params     # overwrite initializer values
                 qs = mean_vector                #data[-2:-1]#mean_vector
 
             else:
                 data = trajectories[i - NstepsDeposite + 1:i + 1]
                 data = np.squeeze(data, axis=1)  # (100, 2)
-                mean_vector = AE(data, ic_method)
+                mean_vector = np.mean(data, axis=0, keepdims=True)
+                params, opt_state = AE(data, params, opt_state, optimizer)
+                encoder_params_list = jnp.concatenate([encoder_params_list, jnp.array([params])], axis=0)
                 qs = np.concatenate([qs, mean_vector], axis=0)
 
     trajectories[Nsteps, :] = q
     return trajectories, qs
 
 
-def next_step(qnow, qs, height, sigma, dt=1e-3, beta=1.0):
+def next_step(qnow, qs, encoder_params_list, height, sigma, dt=1e-3, beta=1.0):
     if qs is None:
         qnext = qnow + (- gradV(qnow)) * dt + np.sqrt(2 * dt / beta) * np.random.randn(*qnow.shape)
     else:
-        qnext = qnow + (- (gradV(qnow) + GradGaussian(qnow, qs, height, sigma))) * dt + np.sqrt(
+        qnext = qnow + (- (gradV(qnow) + GradGaussian(qnow, qs, encoder_params_list, height, sigma))) * dt + np.sqrt(
             2 * dt / beta) * np.random.randn(*qnow.shape)
     # print(qnow.shape, qnext.shape, np.random.randn(*qnow.shape))
     return qnext
@@ -209,8 +277,8 @@ if __name__ == '__main__':
     parser.add_argument('--trial', type=int, default=0)
     args = parser.parse_args()
 
-    # number of extra dimensions
-    n = 8
+    # # number of extra dimensions
+    # n = 8
 
     xx = np.linspace(-10, 10, 200)
     yy = np.linspace(-25, 25, 200)
@@ -224,8 +292,8 @@ if __name__ == '__main__':
     contourf_ = ax1.contourf(X, Y, W1, levels=29)
     plt.colorbar(contourf_)
 
-    T = 400
-    # T = 10
+    # T = 400
+    T = 10
     dt = 1e-2
     beta = 4
     Tdeposite = 1

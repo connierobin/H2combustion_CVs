@@ -12,16 +12,6 @@ import time
 # Global dimensionality of the system
 n = 8
 
-class OptimizerWrapper:
-    def __init__(self, optimizer, params):
-        self.optimizer = optimizer
-        self.opt_state = optimizer.init(params)
-
-    def update(self, grads, params):
-        updates, self.opt_state = self.optimizer.update(grads, self.opt_state, params)
-        new_params = optax.apply_updates(params, updates)
-        return new_params
-
 def potential(qx, qy, qn):
     V = 0.1*(qy +0.1*qx**3)**2 + 2*jnp.exp(-qx**2) + (qx**2+qy**2)/36 + jnp.sum(qn**2)/36
     return V
@@ -64,29 +54,30 @@ def initialize_autoencoder(rng, sample):
     print("Params type:", type(params))
     return params
 
-def train_step(params, x, optimizer_wrapper, is_training):
+def train_step(params, x, opt_state, optimizer, is_training):
     (loss, grads) = jax.value_and_grad(mse_loss, has_aux=True)(params, x, is_training)
-    new_params = optimizer_wrapper.update(grads, params)
-    return new_params, loss
+    updates, opt_state = optimizer.update(grads, opt_state, params)
+    new_params = optax.apply_updates(params, updates)
+    return new_params, opt_state, loss
 
-def train_autoencoder(data, params, optimizer_wrapper, epochs=300, batch_size=32):
+def train_autoencoder(data, params, opt_state, optimizer, epochs=300, batch_size=32):
     for epoch in range(epochs):
         data = jax.random.permutation(jax.random.PRNGKey(epoch), data)
         for i in range(0, len(data), batch_size):
             batch = data[i:i + batch_size]
-            params, loss = train_step(params, batch, optimizer_wrapper, is_training=True)
+            params, opt_state, loss = train_step(params, batch, opt_state, optimizer, is_training=True)
         if epoch % 10 == 0:
             print(f'Epoch {epoch}, Loss: {loss}')
-    return params
+    return params, opt_state
 
 def mse_loss(params, x, is_training):
     decoded, encoded = autoencoder.apply(params, None, x, is_training=is_training)
     loss = jnp.mean((x - decoded) ** 2)
     return loss, None
 
-def AE(data, params, optimizer_wrapper):
-    params = train_autoencoder(data, params, optimizer_wrapper)
-    return params
+def AE(data, params, opt_state, optimizer):
+    params, opt_state = train_autoencoder(data, params, opt_state, optimizer)
+    return params, opt_state
 
 def encode(params, x):
     _, encoded = autoencoder.apply(params, None, x, is_training=False)
@@ -145,7 +136,20 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, n=0):
     
     # Initialize the optimizer
     optimizer = optax.adam(1e-3)
-    optimizer_wrapper = OptimizerWrapper(optimizer, params)
+    opt_state = optimizer.init(params)
+
+    # Register the optimizer state as a PyTree
+    def opt_state_flatten(opt_state):
+        return (opt_state,), None
+
+    def opt_state_unflatten(aux_data, children):
+        return children[0]
+
+    jax.tree_util.register_pytree_node(
+        optax.OptState,
+        opt_state_flatten,
+        opt_state_unflatten
+    )
 
     for i in tqdm(range(Nsteps)):
         trajectories[i, :] = q
@@ -155,13 +159,13 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, n=0):
             if qs is None:
                 data = trajectories[:NstepsDeposite]
                 data = np.squeeze(data, axis=1)
-                params = AE(data, params, optimizer_wrapper)
+                params, opt_state = AE(data, params, opt_state, optimizer)
                 encoder_params_list[0] = params
                 qs = np.mean(data, axis=0, keepdims=True)
             else:
                 data = trajectories[i - NstepsDeposite + 1:i + 1]
                 data = np.squeeze(data, axis=1)
-                params = AE(data, params, optimizer_wrapper)
+                params, opt_state = AE(data, params, opt_state, optimizer)
                 encoder_params_list.append(params)
                 qs = np.concatenate([qs, np.mean(data, axis=0, keepdims=True)], axis=0)
 
@@ -176,6 +180,7 @@ def findTSTime(trajectory):
         return f"The first time step where the first dimension is greater than 0 is: {first_occurrence_index}"
     else:
         return "There are no time steps where the first dimension is greater than 0."
+
 
 def test1():
     parser = argparse.ArgumentParser()
@@ -245,14 +250,14 @@ def test2():
     sample = jnp.ones((1, 2 + n))
     params = initialize_autoencoder(rng, sample)
     optimizer = optax.adam(1e-3)
-    optimizer_wrapper = OptimizerWrapper(optimizer, params)
+    opt_state = optimizer.init(params)
 
     # Create dummy data for the test
     data = jax.random.normal(rng, (100, 2 + n))
 
     # Measure time for training step
     start_time = time.time()
-    params = train_autoencoder(data, params, optimizer_wrapper, epochs=10, batch_size=10)
+    params, opt_state = train_autoencoder(data, params, opt_state, optimizer, epochs=10, batch_size=10)
     end_time = time.time()
     print(f"Time taken for training (10 epochs): {end_time - start_time:.4f} seconds")
 
@@ -266,6 +271,8 @@ def test2():
         q0 = next_step(q0, qs, encoder_params_list, height=0.25, sigma=1.25, dt=1e-2, beta=4)
     end_time = time.time()
     print(f"Time taken for 1000 next_step calls: {end_time - start_time:.4f} seconds")
+
+
 
 
 if __name__ == '__main__':

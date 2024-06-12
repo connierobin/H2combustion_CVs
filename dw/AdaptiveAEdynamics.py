@@ -14,10 +14,12 @@ from jax import vmap
 from functools import partial
 import haiku as hk
 import optax
+import random
+import time
 
 
 # Global dimensionality of the system
-n = 8
+n = 3
 
 
 def potential(qx, qy, qn):
@@ -32,7 +34,8 @@ def gradV(q):
     Vx = 0.1*2*(qy +0.1*qx**3)*3*0.1*qx**2 - 2*qx*2*jnp.exp(-qx**2) + 2*qx/36
     Vy = 0.1*2*(qy +0.1*qx**3) + 2*qy/36
     Vn = 2*qn/36
-    return jnp.concatenate((Vx, Vy, Vn), axis=1)
+    grad = jnp.concatenate((Vx, Vy, Vn), axis=1)
+    return grad
 
 
 # Define the autoencoder
@@ -64,8 +67,6 @@ def initialize_autoencoder(rng, sample):
     params = autoencoder.init(rng, sample, is_training=True)
     return params
 
-
-# THIS WAY DOES NOT SEEM TO WORK PROPERLY
 
 @partial(jax.jit, static_argnums=(3, 4))
 def train_step(params, x, opt_state, update_fn, is_training):
@@ -144,11 +145,11 @@ def encode(params, x):
 
 
 @jax.jit
-def SumGaussian_single(x, center, encoder_params, h, sigma):
+def SumGaussian_single(x, center, encoder_params, scale_factor, h, sigma):
     x_minus_center = x - center
     x_projected = encode(encoder_params, x_minus_center)
     x_projected_sq_sum = jnp.sum(x_projected**2)
-    exps = h * jnp.exp(-x_projected_sq_sum / (2 * sigma**2))
+    exps = scale_factor * h * jnp.exp(-x_projected_sq_sum / (2 * sigma**2))
     return exps
 
 
@@ -179,7 +180,7 @@ def SumGaussian_single(x, center, encoder_params, h, sigma):
 
 # UNSUMMED
 @jax.jit
-def JSumGaussian(x, centers, encoder_params_list, h, sigma):
+def JSumGaussian(x, centers, encoder_params_list, scale_factors, h, sigma):
     # x: 1 * M
     # centers: N * M
 
@@ -188,10 +189,11 @@ def JSumGaussian(x, centers, encoder_params_list, h, sigma):
         return params
 
     encoder_params_batched = batch_params(encoder_params_list[0])
+    scale_factors_batched = jnp.array(scale_factors)
     
     # Vectorize the single computation over the batch dimension N
-    vmap_sum_gaussian = vmap(SumGaussian_single, in_axes=(0, None, None, None, None))
-    total_bias = vmap_sum_gaussian(x, centers, encoder_params_batched, h, sigma)  # N
+    vmap_sum_gaussian = vmap(SumGaussian_single, in_axes=(0, None, None, None, None, None))
+    total_bias = vmap_sum_gaussian(x, centers, encoder_params_batched, scale_factors_batched, h, sigma)  # N
 
 
     # TODO??: Normalize AND plot the size of normalization factor
@@ -207,30 +209,70 @@ jax_SumGaussian = jax.grad(JSumGaussian)
 jax_SumGaussian_jit = jax.jit(jax_SumGaussian)
 
 @jax.jit
-def GradGaussian(x, centers, encoder_params_list, h, sigma):
+def GradGaussian(x, centers, encoder_params_list, scale_factors, h, sigma):
     # print(f'jax_SumGaussianPW_jit._cache_size: {jax_VSumGaussianPW_jit._cache_size()}')
     x_jnp = jnp.array(x)
     centers_jnp = jnp.array(centers)        # N * D
     encoder_params_list_jnp = jax.tree_map(lambda x: jnp.array(x), encoder_params_list)
+    scale_factors_jnp = jnp.array(scale_factors)        # N * D
     # grad = jax_SumGaussian_jit(x_jnp, centers_jnp, encoder_params_list_jnp, h, sigma)
-    grad = jax.grad(lambda x: jnp.sum(JSumGaussian(x, centers_jnp, encoder_params_list_jnp, h, sigma)))(x_jnp)
+    grad = jax.grad(lambda x: jnp.sum(JSumGaussian(x, centers_jnp, encoder_params_list_jnp, scale_factors_jnp, h, sigma)))(x_jnp)
     return grad
 
 
-@jax.jit
-def next_step(qnow, qs, encoder_params_list, height, sigma, dt=1e-3, beta=1.0):
+def calculate_scale_factor(center, encoder_params, h, sigma):
+    x_projected = encode(encoder_params, center - center)
+    x_projected_sq_sum = jnp.sum(x_projected**2)
+    gauss_value = h * jnp.exp(-x_projected_sq_sum / (2 * sigma**2))
+    # print(f'gauss_value: {gauss_value}')
+    desired_value = h * (1 / (jnp.sqrt(2 * jnp.pi * sigma**2)))
+    # print(f'desired_value: {desired_value}')
+    # print(f'scale factor: {desired_value / gauss_value}')
+    return desired_value / gauss_value
+
+
+# @jax.jit
+def next_step(qnow, qs, encoder_params_list, scale_factors, height, sigma, dt=1e-3, beta=1.0):
+    seed = int(time.time() * 1e6)  # Generate a seed based on the current time in microseconds
+    rng_key = jax.random.PRNGKey(seed)
+    rng_key, subkey = jax.random.split(rng_key)
+
     if qs is None:
-        qnext = qnow + (- gradV(qnow)) * dt + jnp.sqrt(2 * dt / beta) * jax.random.normal(jax.random.PRNGKey(0), shape=qnow.shape)
+        qnext = qnow + (- gradV(qnow)) * dt + jnp.sqrt(2 * dt / beta) * jax.random.normal(subkey, shape=qnow.shape)
     else:
-        qnext = qnow + (- (gradV(qnow) + GradGaussian(qnow, qs, encoder_params_list, height, sigma))) * dt + jnp.sqrt(
-            2 * dt / beta) * jax.random.normal(jax.random.PRNGKey(0), shape=qnow.shape)
+        qnext = qnow + (- (gradV(qnow) + GradGaussian(qnow, qs, encoder_params_list, scale_factors, height, sigma))) * dt + jnp.sqrt(
+            2 * dt / beta) * jax.random.normal(subkey, shape=qnow.shape)
+        grad = jax.grad(lambda x: jnp.sum(JSumGaussian(x, qs, encoder_params_list, scale_factors, height, sigma)))(qnow)
+        print(f"GradGaussian: {grad}")  # Debug print
+        sum = jnp.sum(JSumGaussian(qnow, qs, encoder_params_list, scale_factors, height, sigma))
+        print(f"SumGaussian: {sum}")  # Debug print
+    # print(f"qnow: {qnow}, qnext: {qnext}")  # Debug print
     return qnext
+
+
+def GradAtCenter(centers, encoder_params_list, scale_factors, h, sigma):
+    gradients = []
+    for center, encoder_params, scale_factor in zip(centers, encoder_params_list, scale_factors):
+        grad = GradGaussian(center, [center], [encoder_params], [scale_factor], h, sigma)
+        gradients.append(grad)
+    return jnp.array(gradients)
+
+
+# @jax.jit
+# def GradAtCenter(centers, encoder_params_list, scale_factors, h, sigma):
+#     def grad_center(center, encoder_params, scale_factor):
+#         grad = jax_SumGaussian_jit(center, centers, encoder_params, scale_factors, h, sigma)
+#         return grad
+    
+#     vmap_grad_center = vmap(grad_center, in_axes=(0, None))
+#     return vmap_grad_center(centers, encoder_params_list, scale_factors)
 
 
 def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, n=0):
     Nsteps = int(T / dt)
     NstepsDeposite = int(Tdeposite / dt)
-    trajectories = np.zeros((Nsteps + 1, q0.shape[0], 2 + n))
+    # trajectories = np.zeros((Nsteps + 1, q0.shape[0], 2 + n))
+    trajectories = np.zeros((Nsteps + 1, q0.shape[0], q0.shape[1]))
 
     # variance = 0.7  # Threshhold for choosing number of eigenvectors
     q = q0
@@ -241,9 +283,12 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, n=0):
     sample = jnp.ones((1, 2 + n))
 
     # Initialize the autoencoder
-    rng = jax.random.PRNGKey(42)
+    # rng = jax.random.PRNGKey(42)
+    seed = random.randint(0, 2**32 - 1)
+    rng = jax.random.PRNGKey(seed)
     params = initialize_autoencoder(rng, sample)
     encoder_params_list = [params]
+    scale_factors = [1.0]  # Initialize scale factors
     
     # Initialize the optimizer
     optimizer = optax.adam(1e-3)
@@ -266,7 +311,7 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, n=0):
     for i in tqdm(range(Nsteps)):
 
         trajectories[i, :] = q
-        q = next_step(q, qs, encoder_params_list, height, sigma, dt, beta)
+        q = next_step(q, qs, encoder_params_list, scale_factors, height, sigma, dt, beta)
 
         if (i + 1) % NstepsDeposite == 0:
 
@@ -278,6 +323,9 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, n=0):
                 params, opt_state = AE(data, params, opt_state, optimizer)
                 encoder_params_list[0] = params     # overwrite initializer values
                 qs = mean_vector                #data[-2:-1]#mean_vector
+                # Calculate scale factor for the new center
+                new_scale_factor = calculate_scale_factor(mean_vector, params, height, sigma)
+                scale_factors[0] = new_scale_factor
 
             else:
                 data = trajectories[i - NstepsDeposite + 1:i + 1]
@@ -286,9 +334,16 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, n=0):
                 params, opt_state = AE(data, params, opt_state, optimizer)
                 encoder_params_list.append(params)
                 qs = np.concatenate([qs, mean_vector], axis=0)
+                # Calculate scale factor for the new center
+                new_scale_factor = calculate_scale_factor(mean_vector, params, height, sigma)
+                scale_factors.append(new_scale_factor)
 
     trajectories[Nsteps, :] = q
-    return trajectories, qs, encoder_params_list
+
+    # Calculate gradient directions at each center
+    gradient_directions = GradAtCenter(qs, encoder_params_list, scale_factors, height, sigma)
+
+    return trajectories, qs, encoder_params_list, scale_factors, gradient_directions
 
 
 def findTSTime(trajectory):
@@ -303,8 +358,8 @@ def findTSTime(trajectory):
     else:
         return "There are no time steps where the first dimension is greater than 0."
 
-if __name__ == '__main__':
 
+def run(filename=None, T=4):
     parser = argparse.ArgumentParser()
     parser.add_argument('--trial', type=int, default=0)
     args = parser.parse_args()
@@ -324,10 +379,9 @@ if __name__ == '__main__':
     contourf_ = ax1.contourf(X, Y, W1, levels=29)
     plt.colorbar(contourf_)
 
-    # T = 400
-    T = 4
+    # T = 100
     dt = 1e-2
-    beta = 4
+    beta = 20
     Tdeposite = 1
     height = 0.25
     sigma = 1.25
@@ -339,8 +393,8 @@ if __name__ == '__main__':
 
 
     for i in range(1):
-        q0 = np.concatenate((np.array([[-5.0, 12.0]]), np.array([np.random.rand(8)*40-20])), axis=1)
-        trajectory, qs, encoder_params_list = MD(q0, T, Tdeposite=Tdeposite, height=height, sigma=sigma, dt=dt, beta=beta, n=n)  # (steps, bs, dim)
+        q0 = np.concatenate((np.array([[-5.0, 12.0]]), np.array([np.random.rand(n)*40-20])), axis=1)
+        trajectory, qs, encoder_params_list, scale_factors, gradient_directions = MD(q0, T, Tdeposite=Tdeposite, height=height, sigma=sigma, dt=dt, beta=beta, n=n)  # (steps, bs, dim)
         # print(eigenvalues.shape)
         print(findTSTime(trajectory))
         indices = np.arange(trajectory.shape[0])
@@ -360,17 +414,18 @@ if __name__ == '__main__':
     #     print(str(i) + ' compoenent dev: ', (GaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma) - V0)/eps)
 
     num_points = X.shape[0] * X.shape[1]
-    Gs = JSumGaussian(jnp.concatenate([X.reshape(-1, 1), Y.reshape(-1, 1), jnp.zeros((num_points, n))], axis=1), qs, encoder_params_list, h=height, sigma=sigma)
+    Gs = JSumGaussian(jnp.concatenate([X.reshape(-1, 1), Y.reshape(-1, 1), jnp.zeros((num_points, n))], axis=1), qs, encoder_params_list, scale_factors, h=height, sigma=sigma)
     ax2 = fig.add_subplot(1, 3, 2)
     # Print the shape of Gs before reshaping
-    print("Shape of Gs:", Gs.shape)
+    Gs = np.sum(Gs, axis=1)
     Sum = Gs.reshape(200, 200) + np.array(W1)
 
     cnf2 = ax2.contourf(X, Y, Gs.reshape(200, 200), levels=29)
     plt.colorbar(cnf2)
     indices = np.arange(qs.shape[0])
     ax2.scatter(qs[:, 0], qs[:, 1], c=indices, cmap=cmap)
-    ax2.quiver(qs[:, 0], qs[:, 1])
+    # ax2.quiver(qs[:, 0], qs[:, 1])
+    ax2.quiver(qs[:, 0], qs[:, 1], gradient_directions[:, 0], gradient_directions[:, 1])
     ax2.axis('equal')
     indices = np.arange(trajectory.shape[0])
     # ax2.scatter(trajectory[:, 0, 0], trajectory[:, 0, 1], c=indices, cmap=cmap, alpha=0.1)
@@ -381,4 +436,14 @@ if __name__ == '__main__':
 
     # fig.colorbar(contourf_)
     plt.title('Local AE dynamics')
-    plt.show()
+    if filename is None:
+        plt.show()
+    else:
+        plt.savefig(filename)
+
+
+if __name__ == '__main__':
+    run(T=50)
+    # run(filename='T40', T=40)
+
+    

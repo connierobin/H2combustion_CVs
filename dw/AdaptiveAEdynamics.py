@@ -51,7 +51,8 @@ def autoencoder_fn(x, is_training=False):
     x = jax.nn.relu(x)
     x = hk.Linear(intermediate_dim)(x)
     x = jax.nn.relu(x)
-    decoded = jax.numpy.abs(hk.Linear(input_dim)(x))
+    # decoded = jax.numpy.abs(hk.Linear(input_dim)(x))  # This led to large loss values
+    decoded = hk.Linear(input_dim)(x)
     return decoded, encoded
 
 
@@ -63,6 +64,8 @@ def initialize_autoencoder(rng, sample):
     params = autoencoder.init(rng, sample, is_training=True)
     return params
 
+
+# THIS WAY DOES NOT SEEM TO WORK PROPERLY
 
 @partial(jax.jit, static_argnums=(3, 4))
 def train_step(params, x, opt_state, update_fn, is_training):
@@ -78,23 +81,54 @@ def train_epoch(params, data, opt_state, update_fn, batch_size):
         params, opt_state, loss = carry
         start = i * batch_size
         batch = jax.lax.dynamic_slice(data, (start, 0), (batch_size, data.shape[1]))
+        print(f'batch.shape: {batch.shape}')
         params, opt_state, batch_loss = train_step(params, batch, opt_state, update_fn, is_training=True)
+        print(f'batch_loss: {batch_loss[0]}')
         loss += batch_loss[0]  # Extract the actual loss value
         return params, opt_state, loss
 
     num_batches = len(data) // batch_size
+    loss = 0.0
     params, opt_state, loss = jax.lax.fori_loop(0, num_batches, body_fun, (params, opt_state, 0.0))
     return params, opt_state, loss
 
 
-def train_autoencoder(data, params, opt_state, optimizer, epochs=300, batch_size=32):
+def train_autoencoder(data, params, opt_state, optimizer, epochs=300, batch_size=4):
     update_fn = optimizer.update
     for epoch in range(epochs):
+        # data = jax.random.permutation(jax.random.PRNGKey(epoch), data)
+        # params, opt_state, loss = train_epoch(params, data, opt_state, update_fn, batch_size)
         data = jax.random.permutation(jax.random.PRNGKey(epoch), data)
         params, opt_state, loss = train_epoch(params, data, opt_state, update_fn, batch_size)
         if epoch % 10 == 0:
             print(f'Epoch {epoch}, Loss: {loss}')
     return params, opt_state
+
+def AE(data, params, opt_state, optimizer):
+    params, opt_state = train_autoencoder(data, params, opt_state, optimizer)
+    return params, opt_state
+
+
+# def train_step(params, x, opt_state, optimizer, is_training):
+#     (loss, grads) = jax.value_and_grad(mse_loss, has_aux=True)(params, x, is_training)
+#     updates, opt_state = optimizer.update(grads, opt_state, params)
+#     new_params = optax.apply_updates(params, updates)
+#     return new_params, opt_state, loss
+
+# def train_autoencoder(data, params, opt_state, optimizer, epochs=300, batch_size=32):
+#     for epoch in range(epochs):
+#         data = jax.random.permutation(jax.random.PRNGKey(epoch), data)
+#         for i in range(0, len(data), batch_size):
+#             batch = data[i:i + batch_size]
+#             params, opt_state, loss = train_step(params, batch, opt_state, optimizer, is_training=True)
+#         if epoch % 10 == 0:
+#             print(f'Epoch {epoch}, Loss: {loss}')
+#     return params, opt_state
+
+
+# def AE(data, params, opt_state, optimizer):
+#     params, opt_state = train_autoencoder(data, params, opt_state, optimizer)
+#     return params, opt_state
 
 
 # Returns a None placeholder that could contain auxiliary information
@@ -102,11 +136,6 @@ def mse_loss(params, x, is_training):
     decoded, encoded = autoencoder.apply(params, x, is_training=is_training)
     loss = jnp.mean((x - decoded) ** 2)
     return loss, None
-
-
-def AE(data, params, opt_state, optimizer):
-    params, opt_state = train_autoencoder(data, params, opt_state, optimizer)
-    return params, opt_state
 
 
 def encode(params, x):
@@ -123,33 +152,34 @@ def SumGaussian_single(x, center, encoder_params, h, sigma):
     return exps
 
 
+# @jax.jit
+# def JSumGaussian(x, centers, encoder_params_list, h, sigma):
+#     # x: 1 * M
+#     # centers: N * M
+
+#     # Ensure that all parameters in encoder_params_list are correctly batched
+#     def batch_params(params):
+#         return params
+
+#     encoder_params_batched = batch_params(encoder_params_list[0])
+    
+#     # Vectorize the single computation over the batch dimension N
+#     vmap_sum_gaussian = vmap(SumGaussian_single, in_axes=(0, None, None, None, None))
+#     total_bias = vmap_sum_gaussian(x, centers, encoder_params_batched, h, sigma)  # N
+
+
+#     # TODO??: Normalize AND plot the size of normalization factor
+#     # Track the new sigma values that we calculate and use that for all calcs
+
+#     # TODO: variable sigma's dependent on the size of the eigenvalue. Larger eigenvalue = larger Gaussian
+#     # NEED that as it might potentially help the AE specifically
+
+#     return jnp.sum(total_bias)  # scalar
+
+
+# UNSUMMED
 @jax.jit
 def JSumGaussian(x, centers, encoder_params_list, h, sigma):
-    # x: 1 * M
-    # centers: N * M
-
-    # Ensure that all parameters in encoder_params_list are correctly batched
-    def batch_params(params):
-        return params
-
-    encoder_params_batched = batch_params(encoder_params_list[0])
-    
-    # Vectorize the single computation over the batch dimension N
-    vmap_sum_gaussian = vmap(SumGaussian_single, in_axes=(0, None, None, None, None))
-    total_bias = vmap_sum_gaussian(x, centers, encoder_params_batched, h, sigma)  # N
-
-
-    # TODO??: Normalize AND plot the size of normalization factor
-    # Track the new sigma values that we calculate and use that for all calcs
-
-    # TODO: variable sigma's dependent on the size of the eigenvalue. Larger eigenvalue = larger Gaussian
-    # NEED that as it might potentially help the AE specifically
-
-    return jnp.sum(total_bias)  # scalar
-
-
-@jax.jit
-def JSumGaussian_unsummed(x, centers, encoder_params_list, h, sigma):
     # x: 1 * M
     # centers: N * M
 
@@ -182,8 +212,19 @@ def GradGaussian(x, centers, encoder_params_list, h, sigma):
     x_jnp = jnp.array(x)
     centers_jnp = jnp.array(centers)        # N * D
     encoder_params_list_jnp = jax.tree_map(lambda x: jnp.array(x), encoder_params_list)
-    grad = jax_SumGaussian_jit(x_jnp, centers_jnp, encoder_params_list_jnp, h, sigma)
+    # grad = jax_SumGaussian_jit(x_jnp, centers_jnp, encoder_params_list_jnp, h, sigma)
+    grad = jax.grad(lambda x: jnp.sum(JSumGaussian(x, centers_jnp, encoder_params_list_jnp, h, sigma)))(x_jnp)
     return grad
+
+
+@jax.jit
+def next_step(qnow, qs, encoder_params_list, height, sigma, dt=1e-3, beta=1.0):
+    if qs is None:
+        qnext = qnow + (- gradV(qnow)) * dt + jnp.sqrt(2 * dt / beta) * jax.random.normal(jax.random.PRNGKey(0), shape=qnow.shape)
+    else:
+        qnext = qnow + (- (gradV(qnow) + GradGaussian(qnow, qs, encoder_params_list, height, sigma))) * dt + jnp.sqrt(
+            2 * dt / beta) * jax.random.normal(jax.random.PRNGKey(0), shape=qnow.shape)
+    return qnext
 
 
 def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, n=0):
@@ -208,18 +249,18 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, n=0):
     optimizer = optax.adam(1e-3)
     opt_state = optimizer.init(params)
 
-    # # Register the optimizer state as a PyTree
-    # def opt_state_flatten(opt_state):
-    #     return (opt_state,), None
+    # Register the optimizer state as a PyTree
+    def opt_state_flatten(opt_state):
+        return (opt_state,), None
 
-    # def opt_state_unflatten(aux_data, children):
-    #     return children[0]
+    def opt_state_unflatten(aux_data, children):
+        return children[0]
 
-    # jax.tree_util.register_pytree_node(
-    #     optax.OptState,
-    #     opt_state_flatten,
-    #     opt_state_unflatten
-    # )
+    jax.tree_util.register_pytree_node(
+        optax.OptState,
+        opt_state_flatten,
+        opt_state_unflatten
+    )
 
 
     for i in tqdm(range(Nsteps)):
@@ -248,16 +289,6 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, n=0):
 
     trajectories[Nsteps, :] = q
     return trajectories, qs, encoder_params_list
-
-
-@jax.jit
-def next_step(qnow, qs, encoder_params_list, height, sigma, dt=1e-3, beta=1.0):
-    if qs is None:
-        qnext = qnow + (- gradV(qnow)) * dt + jnp.sqrt(2 * dt / beta) * jax.random.normal(jax.random.PRNGKey(0), shape=qnow.shape)
-    else:
-        qnext = qnow + (- (gradV(qnow) + GradGaussian(qnow, qs, encoder_params_list, height, sigma))) * dt + jnp.sqrt(
-            2 * dt / beta) * jax.random.normal(jax.random.PRNGKey(0), shape=qnow.shape)
-    return qnext
 
 
 def findTSTime(trajectory):
@@ -294,7 +325,7 @@ if __name__ == '__main__':
     plt.colorbar(contourf_)
 
     # T = 400
-    T = 10
+    T = 4
     dt = 1e-2
     beta = 4
     Tdeposite = 1
@@ -329,7 +360,7 @@ if __name__ == '__main__':
     #     print(str(i) + ' compoenent dev: ', (GaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma) - V0)/eps)
 
     num_points = X.shape[0] * X.shape[1]
-    Gs = JSumGaussian_unsummed(jnp.concatenate([X.reshape(-1, 1), Y.reshape(-1, 1), jnp.zeros((num_points, n))], axis=1), qs, encoder_params_list, h=height, sigma=sigma)
+    Gs = JSumGaussian(jnp.concatenate([X.reshape(-1, 1), Y.reshape(-1, 1), jnp.zeros((num_points, n))], axis=1), qs, encoder_params_list, h=height, sigma=sigma)
     ax2 = fig.add_subplot(1, 3, 2)
     # Print the shape of Gs before reshaping
     print("Shape of Gs:", Gs.shape)

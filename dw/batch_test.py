@@ -194,7 +194,7 @@ def test1():
     contourf_ = ax1.contourf(np.array(X), np.array(Y), np.array(W1), levels=29)
     plt.colorbar(contourf_)
 
-    T = 400
+    T = 4
     dt = 1e-2
     beta = 4
     Tdeposite = 1
@@ -269,7 +269,7 @@ def test2():
 
 
 if __name__ == '__main__':
-    # test1()
-    test2()
+    test1()
+    # test2()
 
     

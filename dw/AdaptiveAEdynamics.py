@@ -623,6 +623,13 @@ def run(filename=None, T=4):
     plt.show()
 
 
+    fig_sigma, ax_sigma = plt.subplots()
+    plt.scatter(sigma_list)
+    plt.xlabel('Iteration')
+    plt.ylabel('Sigma value')
+    plt.title('Gaussian sigma values / Average encoding variance')
+    plt.show()
+
 
     # Plot the individual Gaussians
     for i in range(len(results)):

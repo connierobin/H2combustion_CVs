@@ -43,15 +43,15 @@ def autoencoder_fn(x, is_training=False):
     encoding_dim = 2
 
     x = hk.Linear(intermediate_dim)(x)
-    x = jax.nn.relu(x)
+    x = jax.nn.hard_tanh(x)
     x = hk.Linear(intermediate_dim)(x)
-    x = jax.nn.relu(x)
+    x = jax.nn.hard_tanh(x)
     encoded = hk.Linear(encoding_dim)(x)
 
     x = hk.Linear(intermediate_dim)(encoded)
-    x = jax.nn.relu(x)
+    x = jax.nn.hard_tanh(x)
     x = hk.Linear(intermediate_dim)(x)
-    x = jax.nn.relu(x)
+    x = jax.nn.hard_tanh(x)
     # decoded = jax.numpy.abs(hk.Linear(input_dim)(x))  # This led to large loss values
     decoded = hk.Linear(input_dim)(x)
     return decoded, encoded
@@ -362,7 +362,6 @@ def next_step(qnow, qs, encoder_params_list, scale_factors, height, sigma_list, 
 def GradAtCenter(centers, encoder_params_list, scale_factors, h, sigma_list):
     gradients = []  # N * K
     for center, encoder_params, scale_factor, sigmas in zip(centers, encoder_params_list, scale_factors, sigma_list):
-        print(f'sigmas.shape: {sigmas.shape}')
         grad = GradGaussian([center], [center], [encoder_params], [scale_factor], h, [sigmas])
         gradients.append(grad)
     print(f'GradAtCenter gradients.shape: {jnp.array(gradients).shape}')
@@ -409,19 +408,6 @@ def MD(q0, T, Tdeposite, height, sigma_factor, dt=1e-3, beta=1.0, n=0):
     # Initialize the optimizer
     optimizer = optax.adam(1e-3)
     opt_state = optimizer.init(params)
-
-    # Register the optimizer state as a PyTree
-    def opt_state_flatten(opt_state):
-        return (opt_state,), None
-
-    def opt_state_unflatten(aux_data, children):
-        return children[0]
-
-    jax.tree_util.register_pytree_node(
-        optax.OptState,
-        opt_state_flatten,
-        opt_state_unflatten
-    )
 
 
     for i in tqdm(range(Nsteps)):
@@ -494,17 +480,43 @@ def MD(q0, T, Tdeposite, height, sigma_factor, dt=1e-3, beta=1.0, n=0):
 
 def findTSTime(trajectory):
     x_dimension = trajectory[:, 0, 0]
+    y_dimension = trajectory[:, 0, 1]
+
+    first_occurrence_index_1 = -1
+    first_occurrence_index_2 = -1
+    first_occurrence_index_3 = -1
+
     # Find the indices where the first dimension is greater than 0
-    indices = np.where(x_dimension > 0)[0]
+    indices_1 = np.where(x_dimension > 0)[0]
     # Check if any such indices exist
-    if indices.size > 0:
+    if indices_1.size > 0:
         # Get the first occurrence
-        first_occurrence_index = indices[0]
-        print(f"The first time step where the first dimension is greater than 0 is: {first_occurrence_index}")
-        return first_occurrence_index
+        first_occurrence_index_1 = indices_1[0]
+        print(f"The first time step where the first dimension is greater than 0 is: {first_occurrence_index_1}")
     else:
         print("There are no time steps where the first dimension is greater than 0.")
-        return -1
+
+    # Find the indices where the second dimension is greater than 0
+    indices_2 = np.where(y_dimension < 0)[0]
+    # Check if any such indices exist
+    if indices_2.size > 0:
+        # Get the first occurrence
+        first_occurrence_index_2 = indices_2[0]
+        print(f"The first time step where the second dimension is less than 0 is: {first_occurrence_index_2}")
+    else:
+        print("There are no time steps where the second dimension is less than 0.")
+
+    # Find the indices where the second dimension is greater than 0
+    indices_3 = np.where((x_dimension > 0) & (y_dimension < 0))[0]
+    # Check if any such indices exist
+    if indices_3.size > 0:
+        # Get the first occurrence
+        first_occurrence_index_3 = indices_3[0]
+        print(f"The first time step where the first dimension is greater than zero and the second dimension is less than 0 is: {first_occurrence_index_3}")
+    else:
+        print("There are no time steps where the first dimension is greater than zero and the second dimension is less than 0.")
+
+    return first_occurrence_index_1, first_occurrence_index_2, first_occurrence_index_3
 
 
 def visualize_encoded_data(data, params):
@@ -544,14 +556,10 @@ def visualize_decoded_data(data, params, num_samples=5):
     plt.show()
 
 
+def main_plot(trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, height, NstepsDeposite, T):
+    filename = None
 
-def run(filename=None, T=4):
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--trial', type=int, default=0)
-    args = parser.parse_args()
-
-    # # number of extra dimensions
-    # n = 8
+    cmap = plt.get_cmap('plasma')
 
     xx = np.linspace(-3, 3, 200)
     yy = np.linspace(-5, 5, 200)
@@ -565,40 +573,8 @@ def run(filename=None, T=4):
     contourf_ = ax1.contourf(X, Y, W1, levels=29)
     plt.colorbar(contourf_)
 
-    # T = 100
-    dt = 1e-2
-    beta = 50
-    Tdeposite = 1
-    height = 4.
-    # sigma = 1.25
-    # sigma = 0.2       # typical spread of values in latent space seems to be from -8 to 2, although individual ones seem to range over ~2
-    sigma_factor = 3.
-    ic_method = 'AE'
-
-    foldername = 'Doublewell'
-
-    cmap = plt.get_cmap('plasma')
-
-    max_qn_val = 20
-
-    q0 = np.concatenate((np.array([[-2.0, 2.0]]), np.array([np.random.rand(n)*(2*max_qn_val) - max_qn_val])), axis=1)
-    trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list = MD(q0, T, Tdeposite=Tdeposite, height=height, sigma_factor=sigma_factor, dt=dt, beta=beta, n=n)  # (steps, bs, dim)
-    first_occurrence_index = findTSTime(trajectory)
     indices = np.arange(trajectory.shape[0])
     ax1.scatter(trajectory[:, 0, 0], trajectory[:, 0, 1], c=indices, cmap=cmap)
-
-    savename = 'results/T{}_Tdeposite{}_dt{}_height{}_sigmafactor{}_beta{}_ic{}'.format(T, Tdeposite, dt, height, sigma_factor, beta, ic_method)
-    np.savez(savename, trajectory=trajectory, qs=qs, encoder_params_list=encoder_params_list)
-
-    # # test derivative
-    # eps = 0.0001
-    # print('dev', gradGaussians(q0, qs, eigenvectors, choose_eigenvalue, height, sigma))
-    # V0 = GaussiansPCA(q0, qs, eigenvectors, choose_eigenvalue, height, sigma)
-    # for i in range(2):
-    #     q = q0.copy()
-    #     q[0,i] +=  eps
-    #     print(q0, q)
-    #     print(str(i) + ' compoenent dev: ', (GaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma) - V0)/eps)
 
     num_points = X.shape[0] * X.shape[1]
 
@@ -640,8 +616,9 @@ def run(filename=None, T=4):
     else:
         plt.savefig(filename)
 
-
-    # Plot the autoencoder performance
+    ####################
+    # PLOT PERFORMANCE #
+    ####################
     fig_performance, ax_performance = plt.subplots()
     ax_performance.contourf(X, Y, W1, levels=29)
     plt.colorbar(contourf_, ax=ax_performance)
@@ -650,7 +627,7 @@ def run(filename=None, T=4):
     'red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan',
     'magenta', 'lime', 'indigo', 'violet', 'gold', 'coral', 'teal', 'navy', 'maroon', 'turquoise']
 
-    NstepsDeposite = int(Tdeposite / dt)
+    # NstepsDeposite = int(Tdeposite / dt)
     reshaped_trajectory = trajectory[:-1].reshape(T, NstepsDeposite, 1, 2 + n)  # Assuming 10 iterations and calculating steps
     m = 5   # only show every 5th data point for visual clarity
 
@@ -663,7 +640,9 @@ def run(filename=None, T=4):
     plt.title('Autoencoder Performance')
     plt.show()
 
-
+    ###############
+    # PLOT SIGMAS #
+    ###############
     fig_sigma, ax_sigma = plt.subplots()
     np_sigma_list = np.array(sigma_list)
     N, K = np_sigma_list.shape
@@ -676,6 +655,9 @@ def run(filename=None, T=4):
     plt.show()
 
 
+    ##################
+    # PLOT GAUSSIANS #
+    ##################
     Ncenter = int(NstepsDeposite / 2)
     # Plot the individual Gaussians
     for i in range(len(results)):
@@ -698,6 +680,50 @@ def run(filename=None, T=4):
             gaussian_values = jnp.sum(gaussian_values, axis=-1)
             plot_encoded_data(encoded_values_list[i], gaussian_values)
 
+# def plot_performance(X, Y, W1, trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list):
+    
+
+
+
+
+def run(filename=None, T=4):
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--trial', type=int, default=0)
+    args = parser.parse_args()
+
+    # # number of extra dimensions
+    # n = 8
+
+    # T = 100
+    dt = 1e-2
+    beta = 50
+    Tdeposite = 1
+    height = 4.
+    # sigma = 1.25
+    # sigma = 0.2       # typical spread of values in latent space seems to be from -8 to 2, although individual ones seem to range over ~2
+    sigma_factor = 3.
+    ic_method = 'AE'
+
+    
+
+    max_qn_val = 20
+
+    q0 = np.concatenate((np.array([[-2.0, 2.0]]), np.array([np.random.rand(n)*(2*max_qn_val) - max_qn_val])), axis=1)
+    trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list = MD(q0, T, Tdeposite=Tdeposite, height=height, sigma_factor=sigma_factor, dt=dt, beta=beta, n=n)  # (steps, bs, dim)
+    
+    first_occurrence_index_1, first_occurrence_index_2, first_occurrence_index_3 = findTSTime(trajectory)
+    
+
+
+    savename = 'results/T{}_Tdeposite{}_dt{}_height{}_sigmafactor{}_beta{}_ic{}'.format(T, Tdeposite, dt, height, sigma_factor, beta, ic_method)
+    np.savez(savename, trajectory=trajectory, qs=qs, encoder_params_list=encoder_params_list)
+
+    NstepsDeposite = int(Tdeposite / dt)
+    # main_plot(trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, height, NstepsDeposite, T)
+    
+    return first_occurrence_index_1, first_occurrence_index_2, first_occurrence_index_3, np.mean(sigma_list)
+    
+
 
     # Visualize encoded data
     # encoded_data_0 = encode(encoder_params_list[0], trajectory)
@@ -715,7 +741,24 @@ def run(filename=None, T=4):
 
 
 if __name__ == '__main__':
-    run(T=2)
+    # i_1, i_2, i_3, sigma = run(T=2)
+
+    results = []
+
+    for _ in range(10):
+        i_1, i_2, i_3, sigma = run(T=100)
+        results.append((i_1, i_2, i_3, sigma))
+
+    # Print results in a way that's easy to copy and paste
+    for result in results:
+        print(f"{result[0]}\t{result[1]}\t{result[2]}\t{result[3]}")
+        
+
     # run(filename='T40', T=40)
+
+
+
+
+
 
     

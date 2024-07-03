@@ -5,7 +5,7 @@ from tqdm import tqdm
 import numpy.linalg as la
 
 def potential(qx, qy, qn):
-    V = 10 * (qx**4 + qy**4 - 2 * qx**2 - 4 * qy**2 + qx * qy + 0.2 * qx + 0.1 * qy + 100 * np.sum(qn**2))
+    V = 10 * (qx**4 + qy**4 - 2 * qx**2 - 4 * qy**2 + qx * qy + 0.2 * qx + 0.1 * qy + np.sum(qn**2))
     return V
 
 def gradV(q):
@@ -178,7 +178,7 @@ def MD(q0, T, Tdeposite, height, sigma, dt=1e-3, beta=1.0, n=0, ic_method='PCA')
     return trajectories, qs, eigenvectors, save_eigenvalues, choose_eigenvalue
 
 
-def next_step(qnow, qs, eigenvectors, choose_eigenvalue, height, sigma, dt=1e-3, beta=1.0):
+def next_step(qnow, qs, eigenvectors, choose_eigenvalue, height, sigma, dt=1e-3, beta=1.0, step_cap=0.3):
     if qs is None:
         qnext = qnow + (- gradV(qnow)) * dt + np.sqrt(2 * dt / beta) * np.random.randn(*qnow.shape)
     else:
@@ -187,26 +187,65 @@ def next_step(qnow, qs, eigenvectors, choose_eigenvalue, height, sigma, dt=1e-3,
     # print(qnow.shape, qnext.shape, np.random.randn(*qnow.shape))
     return qnext
 
+def next_step(qnow, qs, eigenvectors, choose_eigenvalue, height, sigma, dt=1e-3, beta=1.0, step_cap=0.3):
+    if qs is None:
+        step = (-gradV(qnow)) * dt + np.sqrt(2 * dt / beta) * np.random.randn(*qnow.shape)
+        step_size = np.linalg.norm(step)
+        capped_step = np.where(step_size > step_cap, step * (step_cap / step_size), step)
+        qnext = qnow + capped_step
+    else:
+        step = (- (gradV(qnow) + gradGaussians(qnow, qs, eigenvectors, choose_eigenvalue, height, sigma))) * dt + np.sqrt(
+            2 * dt / beta) * np.random.randn(*qnow.shape)
+        step_size = np.linalg.norm(step)
+        capped_step = np.where(step_size > step_cap, step * (step_cap / step_size), step)
+        qnext = qnow + capped_step
+
+    return qnext
+
 def findTSTime(trajectory):
     x_dimension = trajectory[:, 0, 0]
+    y_dimension = trajectory[:, 0, 1]
+
+    first_occurrence_index_1 = -1
+    first_occurrence_index_2 = -1
+    first_occurrence_index_3 = -1
+
     # Find the indices where the first dimension is greater than 0
-    indices = np.where(x_dimension > 0)[0]
+    indices_1 = np.where(x_dimension > 0)[0]
     # Check if any such indices exist
-    if indices.size > 0:
+    if indices_1.size > 0:
         # Get the first occurrence
-        first_occurrence_index = indices[0]
-        return f"The first time step where the first dimension is greater than 0 is: {first_occurrence_index}"
+        first_occurrence_index_1 = indices_1[0]
+        print(f"The first time step where the first dimension is greater than 0 is: {first_occurrence_index_1}")
     else:
-        return "There are no time steps where the first dimension is greater than 0."
+        print("There are no time steps where the first dimension is greater than 0.")
 
-if __name__ == '__main__':
+    # Find the indices where the second dimension is greater than 0
+    indices_2 = np.where(y_dimension < 0)[0]
+    # Check if any such indices exist
+    if indices_2.size > 0:
+        # Get the first occurrence
+        first_occurrence_index_2 = indices_2[0]
+        print(f"The first time step where the second dimension is less than 0 is: {first_occurrence_index_2}")
+    else:
+        print("There are no time steps where the second dimension is less than 0.")
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--trial', type=int, default=0)
-    args = parser.parse_args()
+    # Find the indices where the second dimension is greater than 0
+    indices_3 = np.where((x_dimension > 0) & (y_dimension < 0))[0]
+    # Check if any such indices exist
+    if indices_3.size > 0:
+        # Get the first occurrence
+        first_occurrence_index_3 = indices_3[0]
+        print(f"The first time step where the first dimension is greater than zero and the second dimension is less than 0 is: {first_occurrence_index_3}")
+    else:
+        print("There are no time steps where the first dimension is greater than zero and the second dimension is less than 0.")
 
+    return first_occurrence_index_1, first_occurrence_index_2, first_occurrence_index_3
+
+
+def run(T=100):
     # number of extra dimensions
-    n = 1
+    n = 3
 
     xx = np.linspace(-3, 3, 200)
     yy = np.linspace(-5, 5, 200)
@@ -220,13 +259,13 @@ if __name__ == '__main__':
     contourf_ = ax1.contourf(X, Y, W1, levels=29)
     plt.colorbar(contourf_)
 
-    T = 100
+    # T = 100
     # T = 10
     dt = 1e-2
     beta = 50
     Tdeposite = 1
     height = 4.
-    sigma = 0.2
+    sigma = 0.7
     ic_method = 'PCA'
 
     foldername = 'WolfeSchlegel'
@@ -234,49 +273,77 @@ if __name__ == '__main__':
     cmap = plt.get_cmap('plasma')
 
 
-    for i in range(1):
-        max_qn_val = 20
-        q0 = np.concatenate((np.array([[-2.0, 2.0]]), np.array([np.random.rand(n)*(2*max_qn_val) - max_qn_val])), axis=1)
-        trajectory, qs, eigenvectors, eigenvalues, choose_eigenvalue = MD(q0, T, Tdeposite=Tdeposite, height=height, sigma=sigma, dt=dt, beta=beta, n=n, ic_method=ic_method)  # (steps, bs, dim)
-        # print(eigenvalues.shape)
-        print(findTSTime(trajectory))
+    max_qn_val = 20
+    q0 = np.concatenate((np.array([[-2.0, 2.0]]), np.array([np.random.rand(n)*(2*max_qn_val) - max_qn_val])), axis=1)
+    trajectory, qs, eigenvectors, eigenvalues, choose_eigenvalue = MD(q0, T, Tdeposite=Tdeposite, height=height, sigma=sigma, dt=dt, beta=beta, n=n, ic_method=ic_method)  # (steps, bs, dim)
+    
+    first_occurrence_index_1, first_occurrence_index_2, first_occurrence_index_3 = findTSTime(trajectory)
+
+    savename = 'PCA_results/T{}_Tdeposite{}_dt{}_height{}_sigma{}_beta{}_ic{}'.format(T, Tdeposite, dt, height, sigma, beta, ic_method)
+    np.savez(savename, trajectory=trajectory, qs=qs, save_eigenvector=eigenvectors, save_eigenvalue=eigenvalues, choose_eigenvalue=choose_eigenvalue)
+
+    print(trajectory)
+
+    plotting = False
+    if plotting:
         indices = np.arange(trajectory.shape[0])
         ax1.scatter(trajectory[:, 0, 0], trajectory[:, 0, 1], c=indices, cmap=cmap)
 
-        savename = 'PCA_results/T{}_Tdeposite{}_dt{}_height{}_sigma{}_beta{}_ic{}'.format(T, Tdeposite, dt, height, sigma, beta, ic_method)
-        np.savez(savename, trajectory=trajectory, qs=qs, save_eigenvector=eigenvectors, save_eigenvalue=eigenvalues, choose_eigenvalue=choose_eigenvalue)
         # print(trajectory.shape, choose_eigenvalue)
 
-    # # test derivative
-    # eps = 0.0001
-    # print('dev', gradGaussians(q0, qs, eigenvectors, choose_eigenvalue, height, sigma))
-    # V0 = GaussiansPCA(q0, qs, eigenvectors, choose_eigenvalue, height, sigma)
-    # for i in range(2):
-    #     q = q0.copy()
-    #     q[0,i] +=  eps
-    #     print(q0, q)
-    #     print(str(i) + ' compoenent dev: ', (GaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma) - V0)/eps)
+        # # test derivative
+        # eps = 0.0001
+        # print('dev', gradGaussians(q0, qs, eigenvectors, choose_eigenvalue, height, sigma))
+        # V0 = GaussiansPCA(q0, qs, eigenvectors, choose_eigenvalue, height, sigma)
+        # for i in range(2):
+        #     q = q0.copy()
+        #     q[0,i] +=  eps
+        #     print(q0, q)
+        #     print(str(i) + ' compoenent dev: ', (GaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma) - V0)/eps)
 
-    num_points = X.shape[0] * X.shape[1]
-    Gs = GaussiansPCA(np.concatenate([X.reshape(-1, 1), Y.reshape(-1, 1), np.zeros((num_points, n))], axis=1), qs, eigenvectors, choose_eigenvalue, height=height,
-                      sigma=sigma)
-    ax2 = fig.add_subplot(1, 3, 2)
-    Sum = Gs.reshape(200, 200)+W1
 
-    cnf2 = ax2.contourf(X, Y, Gs.reshape(200, 200), levels=29)
-    plt.colorbar(cnf2)
-    # print(eigenvectors.shape)
-    indices = np.arange(qs.shape[0])
-    ax2.scatter(qs[:, 0], qs[:, 1], c=indices, cmap=cmap)
-    ax2.quiver(qs[:, 0], qs[:, 1], eigenvectors[:, 0, 0], eigenvectors[:, 1, 0])
-    ax2.axis('equal')
-    indices = np.arange(trajectory.shape[0])
-    # ax2.scatter(trajectory[:, 0, 0], trajectory[:, 0, 1], c=indices, cmap=cmap, alpha=0.1)
+        num_points = X.shape[0] * X.shape[1]
+        Gs = GaussiansPCA(np.concatenate([X.reshape(-1, 1), Y.reshape(-1, 1), np.zeros((num_points, n))], axis=1), qs, eigenvectors, choose_eigenvalue, height=height,
+                          sigma=sigma)
+        ax2 = fig.add_subplot(1, 3, 2)
+        Sum = Gs.reshape(200, 200)+W1
 
-    # ax2.scatter(trajectory[:, 0], trajectory[:, 1], c=indices, cmap=cmap)
-    ax3 = fig.add_subplot(1, 3, 3)
-    cnf3 = ax3.contourf(X, Y, Sum, levels=29)
+        cnf2 = ax2.contourf(X, Y, Gs.reshape(200, 200), levels=29)
+        plt.colorbar(cnf2)
+        # print(eigenvectors.shape)
+        indices = np.arange(qs.shape[0])
+        ax2.scatter(qs[:, 0], qs[:, 1], c=indices, cmap=cmap)
+        ax2.quiver(qs[:, 0], qs[:, 1], eigenvectors[:, 0, 0], eigenvectors[:, 1, 0])
+        ax2.axis('equal')
+        indices = np.arange(trajectory.shape[0])
+        # ax2.scatter(trajectory[:, 0, 0], trajectory[:, 0, 1], c=indices, cmap=cmap, alpha=0.1)
 
-    # fig.colorbar(contourf_)
-    plt.title(f'Local {ic_method} dynamics')
-    plt.show()
+        # ax2.scatter(trajectory[:, 0], trajectory[:, 1], c=indices, cmap=cmap)
+        ax3 = fig.add_subplot(1, 3, 3)
+        cnf3 = ax3.contourf(X, Y, Sum, levels=29)
+
+        # fig.colorbar(contourf_)
+        plt.title(f'Local {ic_method} dynamics')
+        plt.show()
+
+    return first_occurrence_index_1, first_occurrence_index_2, first_occurrence_index_3
+
+
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--trial', type=int, default=0)
+    args = parser.parse_args()
+
+    results = []
+    
+    for _ in range(10):
+        i_1, i_2, i_3 = run(T=100)
+        results.append((i_1, i_2, i_3))
+
+    # Print results in a way that's easy to copy and paste
+    for result in results:
+        print(f"{result[0]}\t{result[1]}\t{result[2]}")
+
+
+

@@ -449,6 +449,7 @@ def run(filename=None, T=4):
     # TODO: add in parameter for which autoencoder to use -- to change the number of layers, the activations, whether the params are reset, etc.
     simulation_settings = {
         'n': n,
+        'T': T,
         'dt': dt,
         'beta': beta,
         'Tdeposite': Tdeposite,

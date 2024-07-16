@@ -372,7 +372,10 @@ def load_data():
     if parameters['potential'] == 'wolfeschlegel':
         pot_fn = wolfeschlegel_potential
     
-    main_plot(pot_fn, parameters['n'], trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, parameters['height'], parameters['NstepsDeposite'], parameters['T'])
+    Tdeposite = parameters['Tdeposite']
+    dt = parameters['dt']
+    NstepsDeposite = int(Tdeposite / dt)
+    main_plot(pot_fn, parameters['n'], trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, parameters['height'], NstepsDeposite, parameters['T'])
 
 if __name__ == '__main__':
     load_data()

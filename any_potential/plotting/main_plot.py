@@ -1,8 +1,145 @@
 import h5py
 import json
+import matplotlib as plt
+import numpy as np
+import jax
+from jax import vmap
+import jax.numpy as jnp
+import haiku as hk
 
 
-def main_plot(trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, height, NstepsDeposite, T):
+###############
+# AUTOENCODER #
+###############
+
+# Define the autoencoder
+def autoencoder_fn(x, is_training=False):
+    input_dim = x.shape[-1]
+    intermediate_dim = 64
+    encoding_dim = 2
+
+    x = hk.Linear(intermediate_dim)(x)
+    x = jax.nn.leaky_relu(x)
+    x = hk.Linear(intermediate_dim)(x)
+    x = jax.nn.leaky_relu(x)
+    encoded = hk.Linear(encoding_dim)(x)
+
+    x = hk.Linear(intermediate_dim)(encoded)
+    x = jax.nn.leaky_relu(x)
+    x = hk.Linear(intermediate_dim)(x)
+    x = jax.nn.leaky_relu(x)
+    # decoded = jax.numpy.abs(hk.Linear(input_dim)(x))  # This led to large loss values
+    decoded = hk.Linear(input_dim)(x)
+    return decoded, encoded
+
+def encode(params, x):
+    _, encoded = autoencoder.apply(params, x, is_training=False)
+    return encoded
+
+# Define the autoencoder globally
+autoencoder = hk.without_apply_rng(hk.transform(autoencoder_fn))
+
+
+#####################
+# SUMMING GAUSSIANS #
+#####################
+
+@jax.jit
+def SumGaussian_single(x, center, scale_factor, h, sigmas, ep_0b, ep_0w, ep_1b, ep_1w, ep_2b, ep_2w, ep_3b, ep_3w, ep_4b, ep_4w, ep_5b, ep_5w):
+    encoder_params = {'linear': {'b': ep_0b, 'w': ep_0w},
+                        'linear_1': {'b': ep_1b, 'w': ep_1w},
+                        'linear_2': {'b': ep_2b, 'w': ep_2w},
+                        'linear_3': {'b': ep_3b, 'w': ep_3w},
+                        'linear_4': {'b': ep_4b, 'w': ep_4w},
+                        'linear_5': {'b': ep_5b, 'w': ep_5w},}
+
+    # K = latent space dimension
+    # N = number of points passed in via x
+
+    x_encoded = encode(encoder_params, x)               # N * K
+    center_encoded = encode(encoder_params, center)     # K
+    x_projected = x_encoded - center_encoded            # N * K
+
+    x_projected_sq_sums = x_projected**2    # N * K
+    N = len(x)
+    K = len(sigmas)
+
+    # Vectorized function to calculate exponent
+    def calc_exp(x_projected_sq_sum, sigma):
+        return scale_factor * h * jnp.exp(-x_projected_sq_sum / (2 * sigma**2))
+
+    # Apply vmap over K (latent dimension)
+    calc_exp_vmap = vmap(calc_exp, in_axes=(0, 0))
+
+    # Apply the previous vmap over N (data points)
+    vmap_calc_exp_over_n = vmap(calc_exp_vmap, in_axes=(0, None))
+
+    # Compute the exps
+    exps = vmap_calc_exp_over_n(x_projected_sq_sums, sigmas)
+
+
+    do_print = False
+    if do_print:
+        print(f'sigmas: {sigmas.shape}')
+        print(f'x_encoded: {x_encoded.shape}')
+        print(f'center_encoded: {center_encoded.shape}')
+        print(f'x_projected: {x_projected.shape}')
+        print(f'x_projected_sq_sums: {x_projected_sq_sums.shape}')
+        print(f'exps: {exps.shape}')
+
+    return exps
+
+@jax.jit
+def JSumGaussian(x, centers, encoder_params_list, scale_factors, h, sigma_list):
+    # x: 1 * M
+    # centers: N * M
+
+    x_jnp = jnp.array(x)
+    centers_jnp = jnp.array(centers)
+    scale_factors_jnp = jnp.array(scale_factors)
+    sigma_list_jnp = jnp.array(sigma_list)
+    # encoder_params_list_jnp = jnp.array(encoder_params_list)
+
+    ep_0b = jnp.stack([elem['linear']['b'] for elem in encoder_params_list])
+    ep_0w = jnp.stack([elem['linear']['w'] for elem in encoder_params_list])
+    ep_1b = jnp.stack([elem['linear_1']['b'] for elem in encoder_params_list])
+    ep_1w = jnp.stack([elem['linear_1']['w'] for elem in encoder_params_list])
+    ep_2b = jnp.stack([elem['linear_2']['b'] for elem in encoder_params_list])
+    ep_2w = jnp.stack([elem['linear_2']['w'] for elem in encoder_params_list])
+    ep_3b = jnp.stack([elem['linear_3']['b'] for elem in encoder_params_list])
+    ep_3w = jnp.stack([elem['linear_3']['w'] for elem in encoder_params_list])
+    ep_4b = jnp.stack([elem['linear_4']['b'] for elem in encoder_params_list])
+    ep_4w = jnp.stack([elem['linear_4']['w'] for elem in encoder_params_list])
+    ep_5b = jnp.stack([elem['linear_5']['b'] for elem in encoder_params_list])
+    ep_5w = jnp.stack([elem['linear_5']['w'] for elem in encoder_params_list])
+    
+    # Vectorize the single computation over the batch dimension N
+    vmap_sum_gaussian = vmap(SumGaussian_single, in_axes=(None, 0, 0, None, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    total_bias = vmap_sum_gaussian(x_jnp, centers_jnp, scale_factors_jnp, h, sigma_list_jnp, ep_0b, ep_0w, ep_1b, ep_1w, ep_2b, ep_2w, ep_3b, ep_3w, ep_4b, ep_4w, ep_5b, ep_5w)  # N
+
+    print(f'total_bias.shape: {total_bias.shape}')
+
+    total_bias = jnp.sum(total_bias, axis=0)    # N * K -> N
+
+    print(f'total_bias.shape: {total_bias.shape}')
+
+    # TODO??: Normalize AND plot the size of normalization factor
+    # Track the new sigma values that we calculate and use that for all calcs
+
+    # TODO: variable sigma's dependent on the size of the eigenvalue. Larger eigenvalue = larger Gaussian
+    # NEED that as it might potentially help the AE specifically
+
+    return total_bias  # scalar
+
+############
+# PLOTTING #
+############
+
+def wolfeschlegel_potential(qx, qy, qn):
+    V = 10 * (qx**4 + qy**4 - 2 * qx**2 - 4 * qy**2 + qx * qy + 0.2 * qx + 0.1 * qy + jnp.sum(qn**2))
+    return V
+
+def main_plot(potential, n, trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, height, NstepsDeposite, T):
     filename = None
 
     cmap = plt.get_cmap('plasma')
@@ -215,6 +352,27 @@ def load_data():
 
         elem = encoder_params_list[0]['linear']['b']
         print(f'encoder params[0][linear][b]: {elem}')
+
+        # Data from the simulation
+        trajectory = h5file['trajectory'][:]
+        qs = h5file['qs'][:]
+        encoder_params_list = h5file['encoder_params_list'][:]
+        scale_factors = h5file['scale_factors'][:]
+        gradient_directions = h5file['gradient_directions'][:]
+        encoded_values_list = h5file['encoded_values_list'][:]
+        decoded_values_list = h5file['decoded_values_list'][:]
+        sigma_list = h5file['sigma_list'][:]
+
+        # Simulation parameters
+        parameters = {key: h5file.attrs[key] for key in h5file.attrs}
+
+        print(parameters)
+    
+    pot_fn = None
+    if parameters['potential'] == 'wolfeschlegel':
+        pot_fn = wolfeschlegel_potential
+    
+    main_plot(pot_fn, parameters['n'], trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, parameters['height'], parameters['NstepsDeposite'], parameters['T'])
 
 if __name__ == '__main__':
     load_data()

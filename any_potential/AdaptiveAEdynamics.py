@@ -438,7 +438,7 @@ def run(filename=None, T=4):
     height = 4.
     sigma_factor = 3.
     ic_method = 'AE'
-    potential = 'dw'
+    potential = 'wolfeschlegel'
     random_seed = 1234
 
     max_qn_val = 20     # size of the relevant part of the potential surface
@@ -448,6 +448,7 @@ def run(filename=None, T=4):
     
     # TODO: add in parameter for which autoencoder to use -- to change the number of layers, the activations, whether the params are reset, etc.
     simulation_settings = {
+        'n': n,
         'dt': dt,
         'beta': beta,
         'Tdeposite': Tdeposite,

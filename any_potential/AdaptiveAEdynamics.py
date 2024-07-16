@@ -324,7 +324,7 @@ def GradAtCenter(centers, encoder_params_list, scale_factors, h, sigma_list):
 #     return vmap_grad_center(centers, encoder_params_list, scale_factors)
 
 
-def MD(q0, T, Tdeposite, height, sigma_factor, dt=1e-3, beta=1.0, n=0, random_seed=1234):
+def MD(q0, T, Tdeposite, height, sigma_factor, rng, dt=1e-3, beta=1.0, n=0):
     Nsteps = int(T / dt)
     NstepsDeposite = int(Tdeposite / dt)
     Ncenter = int(NstepsDeposite / 2)
@@ -339,11 +339,6 @@ def MD(q0, T, Tdeposite, height, sigma_factor, dt=1e-3, beta=1.0, n=0, random_se
     sample = jnp.ones((1, 2 + n))
 
     # Initialize the autoencoder
-    if random_seed == 1234:
-        seed = random.randint(0, 2**32 - 1)
-        rng = jax.random.PRNGKey(seed)
-    else:
-        seed = random_seed
     params = initialize_autoencoder(rng, sample)
     encoder_params_list = [params]
 
@@ -439,12 +434,18 @@ def run(filename=None, T=4):
     sigma_factor = 3.
     ic_method = 'AE'
     potential = 'wolfeschlegel'
-    random_seed = 1234
+    # random_seed = 1234
+    random_seed = None
+    if random_seed == None:
+        seed = random.randint(0, 2**32 - 1)
+    else:
+        seed = random_seed
+    rng = jax.random.PRNGKey(seed)
 
     max_qn_val = 20     # size of the relevant part of the potential surface
 
     q0 = np.concatenate((np.array([[-2.0, 2.0]]), np.array([np.random.rand(n)*(2*max_qn_val) - max_qn_val])), axis=1)
-    trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list = MD(q0, T, Tdeposite=Tdeposite, height=height, sigma_factor=sigma_factor, dt=dt, beta=beta, n=n, random_seed=random_seed)  # (steps, bs, dim)
+    trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list = MD(q0, T, Tdeposite=Tdeposite, height=height, sigma_factor=sigma_factor, rng=rng, dt=dt, beta=beta, n=n)  # (steps, bs, dim)
     
     # TODO: add in parameter for which autoencoder to use -- to change the number of layers, the activations, whether the params are reset, etc.
     simulation_settings = {
@@ -458,12 +459,12 @@ def run(filename=None, T=4):
         'ic_method': ic_method,
         'potential': potential,
         'max_qn_val': max_qn_val,
-        'random_seed': random_seed,
+        'random_seed': seed,
     }
 
     encoder_params_json_strings = [json.dumps(d, default=convert_to_serializable) for d in encoder_params_list]
 
-    with h5py.File('results/test_result.h5', 'w') as h5file:
+    with h5py.File('results/run_2.h5', 'w') as h5file:
         dt = h5py.special_dtype(vlen=str)
         h5file.create_dataset('trajectory', data=trajectory)
         h5file.create_dataset('qs', data=qs)
@@ -486,7 +487,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     for _ in range(1):
-        run(T=2)
+        run(T=100)
 
 
 

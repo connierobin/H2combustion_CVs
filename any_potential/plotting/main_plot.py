@@ -118,11 +118,11 @@ def JSumGaussian(x, centers, encoder_params_list, scale_factors, h, sigma_list):
     vmap_sum_gaussian = vmap(SumGaussian_single, in_axes=(None, 0, 0, None, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
     total_bias = vmap_sum_gaussian(x_jnp, centers_jnp, scale_factors_jnp, h, sigma_list_jnp, ep_0b, ep_0w, ep_1b, ep_1w, ep_2b, ep_2w, ep_3b, ep_3w, ep_4b, ep_4w, ep_5b, ep_5w)  # N
 
-    print(f'total_bias.shape: {total_bias.shape}')
+    # print(f'total_bias.shape: {total_bias.shape}')
 
     total_bias = jnp.sum(total_bias, axis=0)    # N * K -> N
 
-    print(f'total_bias.shape: {total_bias.shape}')
+    # print(f'total_bias.shape: {total_bias.shape}')
 
     # TODO??: Normalize AND plot the size of normalization factor
     # Track the new sigma values that we calculate and use that for all calcs
@@ -311,8 +311,8 @@ def findTSTime(trajectory):
     first_occurrence_index_2 = -1
     first_occurrence_index_3 = -1
 
-    # Find the indices where the first dimension is greater than 0
-    indices_1 = np.where(x_dimension > 0)[0]
+    # Upper Right Quadrant
+    indices_1 = np.where((x_dimension > 0.1) & (y_dimension > 0.1))[0]
     # Check if any such indices exist
     if indices_1.size > 0:
         # Get the first occurrence
@@ -321,8 +321,8 @@ def findTSTime(trajectory):
     else:
         print("There are no time steps where the first dimension is greater than 0.")
 
-    # Find the indices where the second dimension is greater than 0
-    indices_2 = np.where(y_dimension < 0)[0]
+    # Lower Left Quadrant
+    indices_2 = np.where((x_dimension < -0.1) & (y_dimension < -0.1))[0]
     # Check if any such indices exist
     if indices_2.size > 0:
         # Get the first occurrence
@@ -331,8 +331,8 @@ def findTSTime(trajectory):
     else:
         print("There are no time steps where the second dimension is less than 0.")
 
-    # Find the indices where the second dimension is greater than 0
-    indices_3 = np.where((x_dimension > 0) & (y_dimension < 0))[0]
+    # Lower Right Quadrant
+    indices_3 = np.where((x_dimension > 0.1) & (y_dimension < -0.1))[0]
     # Check if any such indices exist
     if indices_3.size > 0:
         # Get the first occurrence
@@ -366,7 +366,7 @@ def load_data():
         else:
             return obj
 
-    with h5py.File('../results/test_result.h5', 'r') as h5file:
+    with h5py.File('../results/run_n3_10.h5', 'r') as h5file:
 
         # The encoder parameters are saved via json
         json_strings = h5file['encoder_params_list'][:]
@@ -397,6 +397,9 @@ def load_data():
     Tdeposite = parameters['Tdeposite']
     dt = parameters['dt']
     NstepsDeposite = int(Tdeposite / dt)
+
+    findTSTime(trajectory)
+
     main_plot(pot_fn, parameters['n'], trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, parameters['height'], NstepsDeposite, parameters['T'])
 
 if __name__ == '__main__':

@@ -20,7 +20,7 @@ import random
 import time
 
 # Global dimensionality of the system
-n = 0
+n = 1
 
 def potential(qx, qy, qn):
     V = 10 * (qx**4 + qy**4 - 2 * qx**2 - 4 * qy**2 + qx * qy + 0.2 * qx + 0.1 * qy + jnp.sum(qn**2))
@@ -464,7 +464,7 @@ def run(filename=None, T=4):
 
     encoder_params_json_strings = [json.dumps(d, default=convert_to_serializable) for d in encoder_params_list]
 
-    with h5py.File('results/run_2.h5', 'w') as h5file:
+    with h5py.File(filename, 'w') as h5file:
         dt = h5py.special_dtype(vlen=str)
         h5file.create_dataset('trajectory', data=trajectory)
         h5file.create_dataset('qs', data=qs)
@@ -486,8 +486,9 @@ if __name__ == '__main__':
     parser.add_argument('--trial', type=int, default=0)
     args = parser.parse_args()
 
-    for _ in range(1):
-        run(T=100)
+    for i in range(1):
+        name = f'results/run_n1_10.h5'
+        run(filename=name, T=100)
 
 
 

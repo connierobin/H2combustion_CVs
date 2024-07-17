@@ -1,11 +1,12 @@
 import h5py
 import json
-import matplotlib as plt
+import matplotlib.pyplot as plt
 import numpy as np
 import jax
 from jax import vmap
 import jax.numpy as jnp
 import haiku as hk
+import re
 
 
 ###############
@@ -44,7 +45,7 @@ autoencoder = hk.without_apply_rng(hk.transform(autoencoder_fn))
 # SUMMING GAUSSIANS #
 #####################
 
-@jax.jit
+# @jax.jit
 def SumGaussian_single(x, center, scale_factor, h, sigmas, ep_0b, ep_0w, ep_1b, ep_1w, ep_2b, ep_2w, ep_3b, ep_3w, ep_4b, ep_4w, ep_5b, ep_5w):
     encoder_params = {'linear': {'b': ep_0b, 'w': ep_0w},
                         'linear_1': {'b': ep_1b, 'w': ep_1w},
@@ -89,7 +90,7 @@ def SumGaussian_single(x, center, scale_factor, h, sigmas, ep_0b, ep_0w, ep_1b, 
 
     return exps
 
-@jax.jit
+# @jax.jit
 def JSumGaussian(x, centers, encoder_params_list, scale_factors, h, sigma_list):
     # x: 1 * M
     # centers: N * M
@@ -100,28 +101,28 @@ def JSumGaussian(x, centers, encoder_params_list, scale_factors, h, sigma_list):
     sigma_list_jnp = jnp.array(sigma_list)
     # encoder_params_list_jnp = jnp.array(encoder_params_list)
 
-    ep_0b = jnp.stack([elem['linear']['b'] for elem in encoder_params_list])
-    ep_0w = jnp.stack([elem['linear']['w'] for elem in encoder_params_list])
-    ep_1b = jnp.stack([elem['linear_1']['b'] for elem in encoder_params_list])
-    ep_1w = jnp.stack([elem['linear_1']['w'] for elem in encoder_params_list])
-    ep_2b = jnp.stack([elem['linear_2']['b'] for elem in encoder_params_list])
-    ep_2w = jnp.stack([elem['linear_2']['w'] for elem in encoder_params_list])
-    ep_3b = jnp.stack([elem['linear_3']['b'] for elem in encoder_params_list])
-    ep_3w = jnp.stack([elem['linear_3']['w'] for elem in encoder_params_list])
-    ep_4b = jnp.stack([elem['linear_4']['b'] for elem in encoder_params_list])
-    ep_4w = jnp.stack([elem['linear_4']['w'] for elem in encoder_params_list])
-    ep_5b = jnp.stack([elem['linear_5']['b'] for elem in encoder_params_list])
-    ep_5w = jnp.stack([elem['linear_5']['w'] for elem in encoder_params_list])
+    ep_0b = jnp.stack([np.array(elem['linear']['b']) for elem in encoder_params_list])
+    ep_0w = jnp.stack([np.array(elem['linear']['w']) for elem in encoder_params_list])
+    ep_1b = jnp.stack([np.array(elem['linear_1']['b']) for elem in encoder_params_list])
+    ep_1w = jnp.stack([np.array(elem['linear_1']['w']) for elem in encoder_params_list])
+    ep_2b = jnp.stack([np.array(elem['linear_2']['b']) for elem in encoder_params_list])
+    ep_2w = jnp.stack([np.array(elem['linear_2']['w']) for elem in encoder_params_list])
+    ep_3b = jnp.stack([np.array(elem['linear_3']['b']) for elem in encoder_params_list])
+    ep_3w = jnp.stack([np.array(elem['linear_3']['w']) for elem in encoder_params_list])
+    ep_4b = jnp.stack([np.array(elem['linear_4']['b']) for elem in encoder_params_list])
+    ep_4w = jnp.stack([np.array(elem['linear_4']['w']) for elem in encoder_params_list])
+    ep_5b = jnp.stack([np.array(elem['linear_5']['b']) for elem in encoder_params_list])
+    ep_5w = jnp.stack([np.array(elem['linear_5']['w']) for elem in encoder_params_list])
     
     # Vectorize the single computation over the batch dimension N
     vmap_sum_gaussian = vmap(SumGaussian_single, in_axes=(None, 0, 0, None, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
     total_bias = vmap_sum_gaussian(x_jnp, centers_jnp, scale_factors_jnp, h, sigma_list_jnp, ep_0b, ep_0w, ep_1b, ep_1w, ep_2b, ep_2w, ep_3b, ep_3w, ep_4b, ep_4w, ep_5b, ep_5w)  # N
 
-    print(f'total_bias.shape: {total_bias.shape}')
+    # print(f'total_bias.shape: {total_bias.shape}')
 
     total_bias = jnp.sum(total_bias, axis=0)    # N * K -> N
 
-    print(f'total_bias.shape: {total_bias.shape}')
+    # print(f'total_bias.shape: {total_bias.shape}')
 
     # TODO??: Normalize AND plot the size of normalization factor
     # Track the new sigma values that we calculate and use that for all calcs
@@ -310,8 +311,8 @@ def findTSTime(trajectory):
     first_occurrence_index_2 = -1
     first_occurrence_index_3 = -1
 
-    # Find the indices where the first dimension is greater than 0
-    indices_1 = np.where(x_dimension > 0)[0]
+    # Upper Right Quadrant
+    indices_1 = np.where((x_dimension > 0.1) & (y_dimension > 0.1))[0]
     # Check if any such indices exist
     if indices_1.size > 0:
         # Get the first occurrence
@@ -320,8 +321,8 @@ def findTSTime(trajectory):
     else:
         print("There are no time steps where the first dimension is greater than 0.")
 
-    # Find the indices where the second dimension is greater than 0
-    indices_2 = np.where(y_dimension < 0)[0]
+    # Lower Left Quadrant
+    indices_2 = np.where((x_dimension < -0.1) & (y_dimension < -0.1))[0]
     # Check if any such indices exist
     if indices_2.size > 0:
         # Get the first occurrence
@@ -330,8 +331,8 @@ def findTSTime(trajectory):
     else:
         print("There are no time steps where the second dimension is less than 0.")
 
-    # Find the indices where the second dimension is greater than 0
-    indices_3 = np.where((x_dimension > 0) & (y_dimension < 0))[0]
+    # Lower Right Quadrant
+    indices_3 = np.where((x_dimension > 0.1) & (y_dimension < -0.1))[0]
     # Check if any such indices exist
     if indices_3.size > 0:
         # Get the first occurrence
@@ -344,19 +345,40 @@ def findTSTime(trajectory):
 
 
 def load_data():
-    with h5py.File('../results/test_result.h5', 'r') as h5file:
+    def convert_to_float(obj):
+        if isinstance(obj, dict):
+            return {k: convert_to_float(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_to_float(item) for item in obj]
+        elif isinstance(obj, str):
+            # Check if the string represents a list or nested list of floats
+            if re.match(r'^\[.*\]$', obj):
+                try:
+                    # Safely evaluate the string as a nested list of floats
+                    return json.loads(obj, parse_float=float)
+                except (ValueError, TypeError):
+                    return obj
+            else:
+                try:
+                    return float(obj)
+                except (ValueError, TypeError):
+                    return obj
+        else:
+            return obj
+
+    with h5py.File('../results/run_n3_10.h5', 'r') as h5file:
 
         # The encoder parameters are saved via json
         json_strings = h5file['encoder_params_list'][:]
-        encoder_params_list = [json.loads(s) for s in json_strings]
+        encoder_params_list = [convert_to_float(json.loads(s)) for s in json_strings]
 
-        elem = encoder_params_list[0]['linear']['b']
-        print(f'encoder params[0][linear][b]: {elem}')
+        elem = encoder_params_list[0]['linear']['b'][1]
+        print(f'encoder params[0][linear][b][1]: {elem}')
+        # print(f'encoder params[0][linear][b][1].dtype: {elem.dtype}')
 
         # Data from the simulation
         trajectory = h5file['trajectory'][:]
         qs = h5file['qs'][:]
-        encoder_params_list = h5file['encoder_params_list'][:]
         scale_factors = h5file['scale_factors'][:]
         gradient_directions = h5file['gradient_directions'][:]
         encoded_values_list = h5file['encoded_values_list'][:]
@@ -375,6 +397,9 @@ def load_data():
     Tdeposite = parameters['Tdeposite']
     dt = parameters['dt']
     NstepsDeposite = int(Tdeposite / dt)
+
+    findTSTime(trajectory)
+
     main_plot(pot_fn, parameters['n'], trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, parameters['height'], NstepsDeposite, parameters['T'])
 
 if __name__ == '__main__':

@@ -157,7 +157,7 @@ def decode(params, x):
 
 
 @jax.jit
-def SumGaussian_single(x, center, scale_factor, h, sigmas, ep_0b, ep_0w, ep_1b, ep_1w, ep_2b, ep_2w, ep_3b, ep_3w, ep_4b, ep_4w, ep_5b, ep_5w):
+def SumGaussian_single(x, center, scale_factor, h, sigmas, decay_sigma, ep_0b, ep_0w, ep_1b, ep_1w, ep_2b, ep_2w, ep_3b, ep_3w, ep_4b, ep_4w, ep_5b, ep_5w):
     encoder_params = {'linear': {'b': ep_0b, 'w': ep_0w},
                         'linear_1': {'b': ep_1b, 'w': ep_1w},
                         'linear_2': {'b': ep_2b, 'w': ep_2w},
@@ -172,22 +172,26 @@ def SumGaussian_single(x, center, scale_factor, h, sigmas, ep_0b, ep_0w, ep_1b, 
     center_encoded = encode(encoder_params, center)     # K
     x_projected = x_encoded - center_encoded            # N * K
 
+    # Compute decay factor
+    cart_dist = jnp.linalg.norm(x - center, axis=1)         # N
+    decay_factors = jnp.exp(-cart_dist / (2 * decay_sigma**2))     # N
+
     x_projected_sq_sums = x_projected**2    # N * K
     N = len(x)
     K = len(sigmas)
 
     # Vectorized function to calculate exponent
-    def calc_exp(x_projected_sq_sum, sigma):
-        return scale_factor * h * jnp.exp(-x_projected_sq_sum / (2 * sigma**2))
+    def calc_exp(x_projected_sq_sum, sigma, decay_factor):
+        return decay_factor * scale_factor * h * jnp.exp(-x_projected_sq_sum / (2 * sigma**2))
 
     # Apply vmap over K (latent dimension)
-    calc_exp_vmap = vmap(calc_exp, in_axes=(0, 0))
+    calc_exp_vmap = vmap(calc_exp, in_axes=(0, 0, None))
 
     # Apply the previous vmap over N (data points)
-    vmap_calc_exp_over_n = vmap(calc_exp_vmap, in_axes=(0, None))
+    vmap_calc_exp_over_n = vmap(calc_exp_vmap, in_axes=(0, None, 0))
 
     # Compute the exps
-    exps = vmap_calc_exp_over_n(x_projected_sq_sums, sigmas)
+    exps = vmap_calc_exp_over_n(x_projected_sq_sums, sigmas, decay_factors)
 
 
     do_print = False

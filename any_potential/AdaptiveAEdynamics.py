@@ -23,7 +23,7 @@ import time
 n = 1
 
 def potential(qx, qy, qn):
-    V = 10 * (qx**4 + qy**4 - 2 * qx**2 - 4 * qy**2 + qx * qy + 0.2 * qx + 0.1 * qy + jnp.sum(qn**2))
+    V = 10 * (qx**4 + qy**4 - 2 * qx**2 - 4 * qy**2 + qx * qy + 0.2 * qx + 0.1 * qy + 10 * jnp.sum(qn**2))
     return V
 
 
@@ -94,13 +94,15 @@ def train_epoch(params, data, opt_state, update_fn, batch_size):
     return params, opt_state, loss
 
 
-def train_autoencoder(data, params, opt_state, optimizer, epochs=300, batch_size=4):
+def train_autoencoder(data, params, opt_state, optimizer, epochs=2000, batch_size=4, threshold=-1.):
     update_fn = optimizer.update
     for epoch in range(epochs):
         # data = jax.random.permutation(jax.random.PRNGKey(epoch), data)
         # params, opt_state, loss = train_epoch(params, data, opt_state, update_fn, batch_size)
         data_scrambled = jax.random.permutation(jax.random.PRNGKey(epoch), data)
         params, opt_state, loss = train_epoch(params, data_scrambled, opt_state, update_fn, batch_size)
+        if loss < threshold:
+            break
         if epoch % 10 == 0:
             print(f'Epoch {epoch}, Loss: {loss}')
 
@@ -109,12 +111,12 @@ def train_autoencoder(data, params, opt_state, optimizer, epochs=300, batch_size
     decoded_values = decode(params, data)
     # encoded_spread = jnp.std(encoded_values, axis=0)
 
-    return params, opt_state, encoded_values, decoded_values
+    return params, opt_state, encoded_values, decoded_values, epoch
 
-def AE(data, params, opt_state, optimizer):
-    params, opt_state, encoded_values, decoded_values = train_autoencoder(data, params, opt_state, optimizer)
+def AE(data, params, opt_state, optimizer, threshold=-1.):
+    params, opt_state, encoded_values, decoded_values, epoch = train_autoencoder(data, params, opt_state, optimizer, threshold=threshold)
 
-    return params, opt_state, encoded_values, decoded_values
+    return params, opt_state, encoded_values, decoded_values, epoch
 
 
 # def train_step(params, x, opt_state, optimizer, is_training):
@@ -174,14 +176,19 @@ def SumGaussian_single(x, center, scale_factor, h, sigmas, decay_sigma, ep_0b, e
 
     # Compute decay factor
     cart_dist = jnp.linalg.norm(x - center, axis=1)         # N
+    # print(f'cart_dist.shape: {cart_dist.shape}')
     decay_factors = jnp.exp(-cart_dist / (2 * decay_sigma**2))     # N
+    # print(f'decay_factors.shape: {decay_factors.shape}')
 
     x_projected_sq_sums = x_projected**2    # N * K
     N = len(x)
     K = len(sigmas)
+    # print(f'N: {N}')
 
     # Vectorized function to calculate exponent
     def calc_exp(x_projected_sq_sum, sigma, decay_factor):
+        # print(f'undecayed exp: {scale_factor * h * jnp.exp(-x_projected_sq_sum / (2 * sigma**2))}')
+        # return scale_factor * h * jnp.exp(-x_projected_sq_sum / (2 * sigma**2))
         return decay_factor * scale_factor * h * jnp.exp(-x_projected_sq_sum / (2 * sigma**2))
 
     # Apply vmap over K (latent dimension)
@@ -208,7 +215,7 @@ def SumGaussian_single(x, center, scale_factor, h, sigmas, decay_sigma, ep_0b, e
 
 # UNSUMMED
 @jax.jit
-def JSumGaussian(x, centers, encoder_params_list, scale_factors, h, sigma_list):
+def JSumGaussian(x, centers, encoder_params_list, scale_factors, h, sigma_list, decay_sigma):
     # x: 1 * M
     # centers: N * M
 
@@ -232,14 +239,14 @@ def JSumGaussian(x, centers, encoder_params_list, scale_factors, h, sigma_list):
     ep_5w = jnp.stack([elem['linear_5']['w'] for elem in encoder_params_list])
     
     # Vectorize the single computation over the batch dimension N
-    vmap_sum_gaussian = vmap(SumGaussian_single, in_axes=(None, 0, 0, None, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
-    total_bias = vmap_sum_gaussian(x_jnp, centers_jnp, scale_factors_jnp, h, sigma_list_jnp, ep_0b, ep_0w, ep_1b, ep_1w, ep_2b, ep_2w, ep_3b, ep_3w, ep_4b, ep_4w, ep_5b, ep_5w)  # N
+    vmap_sum_gaussian = vmap(SumGaussian_single, in_axes=(None, 0, 0, None, 0, None, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    total_bias = vmap_sum_gaussian(x_jnp, centers_jnp, scale_factors_jnp, h, sigma_list_jnp, decay_sigma, ep_0b, ep_0w, ep_1b, ep_1w, ep_2b, ep_2w, ep_3b, ep_3w, ep_4b, ep_4w, ep_5b, ep_5w)  # N
 
-    print(f'total_bias.shape: {total_bias.shape}')
+    # print(f'total_bias.shape: {total_bias.shape}')
 
     total_bias = jnp.sum(total_bias, axis=0)    # N * K -> N
 
-    print(f'total_bias.shape: {total_bias.shape}')
+    # print(f'total_bias.shape: {total_bias.shape}')
 
     # TODO??: Normalize AND plot the size of normalization factor
     # Track the new sigma values that we calculate and use that for all calcs
@@ -254,17 +261,28 @@ jax_SumGaussian = jax.grad(JSumGaussian)
 jax_SumGaussian_jit = jax.jit(jax_SumGaussian)
 
 @jax.jit
-def GradGaussian(x_in, centers, encoder_params_list, scale_factors, h, sigma_list):
+def GradGaussian(x_in, centers, encoder_params_list, scale_factors, h, sigma_list, decay_sigma):
     print(f'jax_SumGaussian_jit._cache_size: {jax_SumGaussian_jit._cache_size()}')
     x_jnp = jnp.array(x_in)
     centers_jnp = jnp.array(centers)        # N * D
     encoder_params_list_jnp = jax.tree_map(lambda x: jnp.array(x), encoder_params_list)
     scale_factors_jnp = jnp.array(scale_factors)        # N * D
     sigma_list_jnp = jnp.array(sigma_list)
+
+    # for i in range(x_jnp.shape[0]):
+    #     for j in range(centers.shape[0]):
+    #         # print(x_jnp.shape)
+    #         x_temp = x_jnp[i]
+    #         center = centers[j]
+    #         # print(x_temp.shape)
+    #         # print(center.shape)
+    #         cart_dist = jnp.linalg.norm(x_temp - center)
+    #         decay_factors = jnp.exp(-cart_dist / (2 * decay_sigma**2))
+    #         print(f'point {i} center {j} decay factor: {decay_factors}')
     # grad = jax_SumGaussian_jit(x_jnp, centers_jnp, encoder_params_list_jnp, h, sigma)
-    grad = jax.grad(lambda x: jnp.sum(JSumGaussian(x, centers_jnp, encoder_params_list_jnp, scale_factors_jnp, h, sigma_list_jnp)))(x_jnp)
+    grad = jax.grad(lambda x: jnp.sum(JSumGaussian(x, centers_jnp, encoder_params_list_jnp, scale_factors_jnp, h, sigma_list_jnp, decay_sigma)))(x_jnp)
     # return jnp.zeros(grad.shape)
-    print(f'gradients.shape: {(jnp.sum(grad, axis=0)).shape}')
+    # print(f'gradients.shape: {(jnp.sum(grad, axis=0)).shape}')
     return jnp.sum(grad, axis=0)
 
 
@@ -282,8 +300,8 @@ def calculate_scale_factor(center, encoder_params, h, sigmas):
     return desired_value / gauss_value
 
 
-@jax.jit
-def next_step(qnow, qs, encoder_params_list, scale_factors, height, sigma_list, dt=1e-3, beta=1.0, step_cap=0.3):
+# @jax.jit
+def next_step(qnow, qs, encoder_params_list, scale_factors, height, sigma_list, decay_sigma, dt=1e-3, beta=1.0, step_cap=0.3):
     seed = int(time.time() * 1e6)  # Generate a seed based on the current time in microseconds
     rng_key = jax.random.PRNGKey(seed)
     rng_key, subkey = jax.random.split(rng_key)
@@ -294,7 +312,7 @@ def next_step(qnow, qs, encoder_params_list, scale_factors, height, sigma_list, 
         capped_step = jnp.where(step_size > step_cap, step * (step_cap / step_size), step)
         qnext = qnow + capped_step
     else:
-        step = (- (gradV(qnow) + GradGaussian(qnow, qs, encoder_params_list, scale_factors, height, sigma_list))) * dt + jnp.sqrt(
+        step = (- (gradV(qnow) + GradGaussian(qnow, qs, encoder_params_list, scale_factors, height, sigma_list, decay_sigma))) * dt + jnp.sqrt(
             2 * dt / beta) * jax.random.normal(subkey, shape=qnow.shape)
         # step = (- gradV(qnow)) * dt + jnp.sqrt(2 * dt / beta) * jax.random.normal(subkey, shape=qnow.shape)
         step_size = jnp.linalg.norm(step)
@@ -308,10 +326,10 @@ def next_step(qnow, qs, encoder_params_list, scale_factors, height, sigma_list, 
     return qnext
 
 
-def GradAtCenter(centers, encoder_params_list, scale_factors, h, sigma_list):
+def GradAtCenter(centers, encoder_params_list, scale_factors, h, sigma_list, decay_sigma):
     gradients = []  # N * K
     for center, encoder_params, scale_factor, sigmas in zip(centers, encoder_params_list, scale_factors, sigma_list):
-        grad = GradGaussian([center], [center], [encoder_params], [scale_factor], h, [sigmas])
+        grad = GradGaussian([center], [center], [encoder_params], [scale_factor], h, [sigmas], decay_sigma)
         gradients.append(grad)
     print(f'GradAtCenter gradients.shape: {jnp.array(gradients).shape}')
     # return jnp.sum(jnp.array(gradients), axis=1)
@@ -328,7 +346,7 @@ def GradAtCenter(centers, encoder_params_list, scale_factors, h, sigma_list):
 #     return vmap_grad_center(centers, encoder_params_list, scale_factors)
 
 
-def MD(q0, T, Tdeposite, height, sigma_factor, rng, dt=1e-3, beta=1.0, n=0):
+def MD(q0, T, Tdeposite, height, sigma_factor, rng, decay_sigma, dt=1e-3, beta=1.0, n=0, threshold=-1.):
     Nsteps = int(T / dt)
     NstepsDeposite = int(Tdeposite / dt)
     Ncenter = int(NstepsDeposite / 2)
@@ -350,6 +368,7 @@ def MD(q0, T, Tdeposite, height, sigma_factor, rng, dt=1e-3, beta=1.0, n=0):
     scale_factors = [1.0]  # Initialize scale factors
     encoded_values_list = []
     decoded_values_list = []
+    epochs_list = []
     
     # Initialize the optimizer
     optimizer = optax.adam(1e-3)
@@ -359,7 +378,7 @@ def MD(q0, T, Tdeposite, height, sigma_factor, rng, dt=1e-3, beta=1.0, n=0):
     for i in tqdm(range(Nsteps)):
 
         trajectories[i, :] = q
-        q = next_step(q, qs, encoder_params_list, scale_factors, height, sigma_list, dt, beta)
+        q = next_step(q, qs, encoder_params_list, scale_factors, height, sigma_list, decay_sigma, dt, beta)
 
         if (i + 1) % NstepsDeposite == 0:
 
@@ -369,7 +388,8 @@ def MD(q0, T, Tdeposite, height, sigma_factor, rng, dt=1e-3, beta=1.0, n=0):
                 data = np.squeeze(data, axis=1)  # (100, 2)
                 mean_vector = np.mean(data, axis=0, keepdims=True)
                 center_vector = np.array([data[Ncenter]])
-                params, opt_state, encoded_values, decoded_values = AE(data, params, opt_state, optimizer)
+                params, opt_state, encoded_values, decoded_values, epoch = AE(data, params, opt_state, optimizer, threshold=threshold)
+                epochs_list.append(epoch)
                 encoder_params_list[0] = params     # overwrite initializer values
                 # qs = mean_vector                #data[-2:-1]#mean_vector
                 qs = center_vector
@@ -388,7 +408,8 @@ def MD(q0, T, Tdeposite, height, sigma_factor, rng, dt=1e-3, beta=1.0, n=0):
                 data = np.squeeze(data, axis=1)  # (100, 2)
                 # mean_vector = np.mean(data, axis=0, keepdims=True)
                 center_vector = np.array([data[Ncenter]])
-                params, opt_state, encoded_values, decoded_values = AE(data, params, opt_state, optimizer)
+                params, opt_state, encoded_values, decoded_values, epoch = AE(data, params, opt_state, optimizer, threshold=threshold)
+                epochs_list.append(epoch)
                 encoder_params_list.append(params)
                 # qs = np.concatenate([qs, mean_vector], axis=0)
                 qs = np.concatenate([qs, center_vector], axis=0)
@@ -408,9 +429,9 @@ def MD(q0, T, Tdeposite, height, sigma_factor, rng, dt=1e-3, beta=1.0, n=0):
     trajectories[Nsteps, :] = q
 
     # Calculate gradient directions at each center
-    gradient_directions = GradAtCenter(qs, encoder_params_list, scale_factors, height, sigma_list)
+    gradient_directions = GradAtCenter(qs, encoder_params_list, scale_factors, height, sigma_list, decay_sigma)
 
-    return trajectories, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list
+    return trajectories, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, epochs_list
 
 
 def convert_to_serializable(obj):
@@ -436,6 +457,8 @@ def run(filename=None, T=4):
     Tdeposite = 1
     height = 4.
     sigma_factor = 3.
+    decay_sigma = 0.7
+    threshold = 0.003
     ic_method = 'AE'
     potential = 'wolfeschlegel'
     # random_seed = 1234
@@ -449,7 +472,7 @@ def run(filename=None, T=4):
     max_qn_val = 20     # size of the relevant part of the potential surface
 
     q0 = np.concatenate((np.array([[-2.0, 2.0]]), np.array([np.random.rand(n)*(2*max_qn_val) - max_qn_val])), axis=1)
-    trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list = MD(q0, T, Tdeposite=Tdeposite, height=height, sigma_factor=sigma_factor, rng=rng, dt=dt, beta=beta, n=n)  # (steps, bs, dim)
+    trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, epochs_list = MD(q0, T, Tdeposite=Tdeposite, height=height, sigma_factor=sigma_factor, decay_sigma=decay_sigma, rng=rng, dt=dt, beta=beta, n=n, threshold=threshold)  # (steps, bs, dim)
     
     # TODO: add in parameter for which autoencoder to use -- to change the number of layers, the activations, whether the params are reset, etc.
     simulation_settings = {
@@ -460,6 +483,8 @@ def run(filename=None, T=4):
         'Tdeposite': Tdeposite,
         'height': height,
         'sigma_factor': sigma_factor,
+        'decay_sigma': decay_sigma,
+        'threshold': threshold,
         'ic_method': ic_method,
         'potential': potential,
         'max_qn_val': max_qn_val,
@@ -478,6 +503,7 @@ def run(filename=None, T=4):
         h5file.create_dataset('encoded_values_list', data=encoded_values_list)
         h5file.create_dataset('decoded_values_list', data=decoded_values_list)
         h5file.create_dataset('sigma_list', data=sigma_list)
+        h5file.create_dataset('epochs_list', data=epochs_list)
 
         for key, value in simulation_settings.items():
             h5file.attrs[key] = value
@@ -491,7 +517,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     for i in range(1):
-        name = f'results/run_n1_10.h5'
+        name = f'results/run_n1earlystop_{i+4}.h5'
         run(filename=name, T=100)
 
 

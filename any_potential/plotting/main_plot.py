@@ -46,7 +46,7 @@ autoencoder = hk.without_apply_rng(hk.transform(autoencoder_fn))
 #####################
 
 # @jax.jit
-def SumGaussian_single(x, center, scale_factor, h, sigmas, ep_0b, ep_0w, ep_1b, ep_1w, ep_2b, ep_2w, ep_3b, ep_3w, ep_4b, ep_4w, ep_5b, ep_5w):
+def SumGaussian_single(x, center, scale_factor, h, sigmas, decay_sigma, ep_0b, ep_0w, ep_1b, ep_1w, ep_2b, ep_2w, ep_3b, ep_3w, ep_4b, ep_4w, ep_5b, ep_5w):
     encoder_params = {'linear': {'b': ep_0b, 'w': ep_0w},
                         'linear_1': {'b': ep_1b, 'w': ep_1w},
                         'linear_2': {'b': ep_2b, 'w': ep_2w},
@@ -61,22 +61,25 @@ def SumGaussian_single(x, center, scale_factor, h, sigmas, ep_0b, ep_0w, ep_1b, 
     center_encoded = encode(encoder_params, center)     # K
     x_projected = x_encoded - center_encoded            # N * K
 
+    cart_dist = jnp.linalg.norm(x - center, axis=1)         # N
+    decay_factors = jnp.exp(-cart_dist / (2 * decay_sigma**2))     # N
+
     x_projected_sq_sums = x_projected**2    # N * K
     N = len(x)
     K = len(sigmas)
 
     # Vectorized function to calculate exponent
-    def calc_exp(x_projected_sq_sum, sigma):
-        return scale_factor * h * jnp.exp(-x_projected_sq_sum / (2 * sigma**2))
+    def calc_exp(x_projected_sq_sum, sigma, decay_factor):
+        return decay_factor * scale_factor * h * jnp.exp(-x_projected_sq_sum / (2 * sigma**2))
 
     # Apply vmap over K (latent dimension)
-    calc_exp_vmap = vmap(calc_exp, in_axes=(0, 0))
+    calc_exp_vmap = vmap(calc_exp, in_axes=(0, 0, None))
 
     # Apply the previous vmap over N (data points)
-    vmap_calc_exp_over_n = vmap(calc_exp_vmap, in_axes=(0, None))
+    vmap_calc_exp_over_n = vmap(calc_exp_vmap, in_axes=(0, None, 0))
 
     # Compute the exps
-    exps = vmap_calc_exp_over_n(x_projected_sq_sums, sigmas)
+    exps = vmap_calc_exp_over_n(x_projected_sq_sums, sigmas, decay_factors)
 
 
     do_print = False
@@ -91,7 +94,7 @@ def SumGaussian_single(x, center, scale_factor, h, sigmas, ep_0b, ep_0w, ep_1b, 
     return exps
 
 # @jax.jit
-def JSumGaussian(x, centers, encoder_params_list, scale_factors, h, sigma_list):
+def JSumGaussian(x, centers, encoder_params_list, scale_factors, h, sigma_list, decay_sigma):
     # x: 1 * M
     # centers: N * M
 
@@ -115,8 +118,8 @@ def JSumGaussian(x, centers, encoder_params_list, scale_factors, h, sigma_list):
     ep_5w = jnp.stack([np.array(elem['linear_5']['w']) for elem in encoder_params_list])
     
     # Vectorize the single computation over the batch dimension N
-    vmap_sum_gaussian = vmap(SumGaussian_single, in_axes=(None, 0, 0, None, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
-    total_bias = vmap_sum_gaussian(x_jnp, centers_jnp, scale_factors_jnp, h, sigma_list_jnp, ep_0b, ep_0w, ep_1b, ep_1w, ep_2b, ep_2w, ep_3b, ep_3w, ep_4b, ep_4w, ep_5b, ep_5w)  # N
+    vmap_sum_gaussian = vmap(SumGaussian_single, in_axes=(None, 0, 0, None, 0, None, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+    total_bias = vmap_sum_gaussian(x_jnp, centers_jnp, scale_factors_jnp, h, sigma_list_jnp, decay_sigma, ep_0b, ep_0w, ep_1b, ep_1w, ep_2b, ep_2w, ep_3b, ep_3w, ep_4b, ep_4w, ep_5b, ep_5w)  # N
 
     # print(f'total_bias.shape: {total_bias.shape}')
 
@@ -140,7 +143,7 @@ def wolfeschlegel_potential(qx, qy, qn):
     V = 10 * (qx**4 + qy**4 - 2 * qx**2 - 4 * qy**2 + qx * qy + 0.2 * qx + 0.1 * qy + jnp.sum(qn**2))
     return V
 
-def main_plot(potential, n, trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, height, NstepsDeposite, T):
+def main_plot(potential, n, trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, epochs_list, decay_sigma, height, NstepsDeposite, T, threshold, timings):
     filename = None
 
     cmap = plt.get_cmap('plasma')
@@ -170,7 +173,7 @@ def main_plot(potential, n, trajectory, qs, encoder_params_list, scale_factors, 
 
     # Gaussian values not summed over time steps:
     for i, (encoder_params, scale_factor, center, sigmas) in enumerate(zip(encoder_params_list, scale_factors, qs, sigma_list)):
-        result = JSumGaussian(points, [center], [encoder_params], [scale_factor], h=height, sigma_list=[sigmas])
+        result = JSumGaussian(points, [center], [encoder_params], [scale_factor], h=height, sigma_list=[sigmas], decay_sigma=decay_sigma)
         results.append(result)
     results = jnp.array(results)
     results = jnp.sum(results, axis=-1)         # TODO: check if this is correct
@@ -224,6 +227,26 @@ def main_plot(potential, n, trajectory, qs, encoder_params_list, scale_factors, 
     plt.title('Autoencoder Performance')
     plt.show()
 
+
+    ###############
+    # PLOT EPOCHS #
+    ###############
+
+    fig_epoch, ax_epoch = plt.subplots()
+    np_epochs_list = np.array(epochs_list)
+    N = np_epochs_list.shape[0]
+    indices = np.arange(N)
+    ax_epoch.scatter(indices, np_epochs_list, label=f'Epoch When Loss < {threshold}')
+    ax_epoch.axvline(x=timings[0]/100, color='r', linestyle='--', label=f'Upper Right Well at Time {timings[0]/100}')
+    ax_epoch.axvline(x=timings[1]/100, color='g', linestyle='--', label=f'Lower Left Well at Time {timings[1]/100}')
+    ax_epoch.axvline(x=timings[2]/100, color='b', linestyle='--', label=f'Lower Right Well at Time {timings[2]/100}')
+    plt.xlabel('Iteration')
+    plt.ylabel(f'Epoch')
+    plt.title('Early Stopping Epoch')
+    plt.legend()
+    plt.show()
+
+
     ###############
     # PLOT SIGMAS #
     ###############
@@ -233,9 +256,13 @@ def main_plot(potential, n, trajectory, qs, encoder_params_list, scale_factors, 
     indices = np.arange(N)
     for k in range(K):
         ax_sigma.scatter(indices, np_sigma_list[:, k], label=f'K={k}')
+    ax_sigma.axvline(x=timings[0]/100, color='r', linestyle='--', label=f'Upper Right Well at Time {timings[0]/100}')
+    ax_sigma.axvline(x=timings[1]/100, color='g', linestyle='--', label=f'Lower Left Well at Time {timings[1]/100}')
+    ax_sigma.axvline(x=timings[2]/100, color='b', linestyle='--', label=f'Lower Right Well at Time {timings[2]/100}')
     plt.xlabel('Iteration')
     plt.ylabel('Sigma value')
     plt.title('Gaussian sigma values / Average encoding variance')
+    plt.legend()
     plt.show()
 
 
@@ -260,7 +287,7 @@ def main_plot(potential, n, trajectory, qs, encoder_params_list, scale_factors, 
         plt.show()
 
         if True:
-            gaussian_values = JSumGaussian(reshaped_trajectory[i, :, 0, :], [qs[i]], [encoder_params_list[i]], [scale_factors[i]], h=height, sigma_list=[sigma_list[i]])
+            gaussian_values = JSumGaussian(reshaped_trajectory[i, :, 0, :], [qs[i]], [encoder_params_list[i]], [scale_factors[i]], h=height, sigma_list=[sigma_list[i]], decay_sigma=decay_sigma)
             gaussian_values = jnp.sum(gaussian_values, axis=-1)
             plot_encoded_data(encoded_values_list[i], gaussian_values)
 
@@ -317,9 +344,9 @@ def findTSTime(trajectory):
     if indices_1.size > 0:
         # Get the first occurrence
         first_occurrence_index_1 = indices_1[0]
-        print(f"The first time step where the first dimension is greater than 0 is: {first_occurrence_index_1}")
+        print(f"The first time step in the UPPER RIGHT well: {first_occurrence_index_1}")
     else:
-        print("There are no time steps where the first dimension is greater than 0.")
+        print("There are no time steps in the UPPER RIGHT well.")
 
     # Lower Left Quadrant
     indices_2 = np.where((x_dimension < -0.1) & (y_dimension < -0.1))[0]
@@ -327,9 +354,9 @@ def findTSTime(trajectory):
     if indices_2.size > 0:
         # Get the first occurrence
         first_occurrence_index_2 = indices_2[0]
-        print(f"The first time step where the second dimension is less than 0 is: {first_occurrence_index_2}")
+        print(f"The first time step in the LOWER LEFT well: {first_occurrence_index_2}")
     else:
-        print("There are no time steps where the second dimension is less than 0.")
+        print("There are no time steps in the LOWER LEFT well.")
 
     # Lower Right Quadrant
     indices_3 = np.where((x_dimension > 0.1) & (y_dimension < -0.1))[0]
@@ -337,14 +364,14 @@ def findTSTime(trajectory):
     if indices_3.size > 0:
         # Get the first occurrence
         first_occurrence_index_3 = indices_3[0]
-        print(f"The first time step where the first dimension is greater than zero and the second dimension is less than 0 is: {first_occurrence_index_3}")
+        print(f"The first time step in the LOWER RIGHT well: {first_occurrence_index_3}")
     else:
-        print("There are no time steps where the first dimension is greater than zero and the second dimension is less than 0.")
+        print("There are no time steps in the LOWER RIGHT well.")
 
     return first_occurrence_index_1, first_occurrence_index_2, first_occurrence_index_3
 
 
-def load_data():
+def load_data(filename):
     def convert_to_float(obj):
         if isinstance(obj, dict):
             return {k: convert_to_float(v) for k, v in obj.items()}
@@ -366,7 +393,7 @@ def load_data():
         else:
             return obj
 
-    with h5py.File('../results/run_n3_10.h5', 'r') as h5file:
+    with h5py.File(filename, 'r') as h5file:
 
         # The encoder parameters are saved via json
         json_strings = h5file['encoder_params_list'][:]
@@ -384,6 +411,7 @@ def load_data():
         encoded_values_list = h5file['encoded_values_list'][:]
         decoded_values_list = h5file['decoded_values_list'][:]
         sigma_list = h5file['sigma_list'][:]
+        epochs_list = h5file['epochs_list'][:]
 
         # Simulation parameters
         parameters = {key: h5file.attrs[key] for key in h5file.attrs}
@@ -398,10 +426,21 @@ def load_data():
     dt = parameters['dt']
     NstepsDeposite = int(Tdeposite / dt)
 
-    findTSTime(trajectory)
+    timings = findTSTime(trajectory)
 
-    main_plot(pot_fn, parameters['n'], trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, parameters['height'], NstepsDeposite, parameters['T'])
+    main_plot(pot_fn, parameters['n'], trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, epochs_list, parameters['decay_sigma'], parameters['height'], NstepsDeposite, parameters['T'], parameters['threshold'], timings)
+
+    return timings
 
 if __name__ == '__main__':
-    load_data()
+
+    # filename = f'../results/run_n1steepdecay_1.h5'
+    # load_data(filename)
+
+    results = []
+    for i in range(1):
+        filename = f'../results/run_n1earlystop_{i+4}.h5'
+        results.append(load_data(filename))
+    for result in results:
+        print(f'{result[0]}, {result[1]}, {result[2]}')
 

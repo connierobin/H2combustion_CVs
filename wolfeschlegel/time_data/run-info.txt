@@ -1,0 +1,64 @@
+Baseline AE
+
+AE-1.txt
+- relu
+- sigma_factor = 1
+- n = 0
+
+
+PCA compare sigmas
+
+PCA-1.txt
+- sigma = 0.7
+
+PCA-2.txt
+- sigma = 0.6
+
+PCA-3.txt
+- sigma = 0.5
+
+PCA-4.txt
+- sigma = 0.8
+
+
+More dimensions
+
+AE-2.txt
+- n = 3
+
+PCA-5.txt
+- n = 3
+
+PCA-6.txt
+- n = 2
+
+PCA-7.txt
+- n = 1
+
+PCA-1.txt
+- n = 0
+
+
+
+
+AE activation functions
+
+AE-3.txt
+- tanh
+
+AE-4.txt
+- leaky relu
+
+AE-5.txt
+- elu
+
+
+
+
+AE sigma factor
+
+AE-6.txt
+- sigma_factor = 2
+
+AE-7.txt
+- sigma_factor = 0.5

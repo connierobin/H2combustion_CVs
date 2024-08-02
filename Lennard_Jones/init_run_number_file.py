@@ -14,6 +14,6 @@ with open(run_number_file, 'r') as f:
     run_number = int(f.read().strip())
 
 # Create a base directory for all simulation runs
-    base_dir = 'simulation_runs'
-    if not os.path.exists(base_dir):
-        os.makedirs(base_dir)
+base_dir = 'simulation_runs'
+if not os.path.exists(base_dir):
+    os.makedirs(base_dir)

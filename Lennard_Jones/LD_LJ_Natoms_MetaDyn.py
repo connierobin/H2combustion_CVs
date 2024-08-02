@@ -186,23 +186,34 @@ h = 0.1
 sigma = 0.1
 kbT = 0.01
 
-LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT)
+# LD_MetaDyn(M, T, Tdeposite, dt, h, sigma, kbT)
 
-# N = 5
-# M = 7
-# k = 2
-# h = 0.1
-# sigma = 0.2
-#
-# x = np.random.rand(1, M)
-# centers = np.random.rand(N, M)
-# eigenvectors = np.random.rand(N, M, k)
-# print(GradGuassian(x, centers, eigenvectors, h, sigma))
-# for i in range(M):
-#     shift = 0.0001
-#     e=np.zeros((1,M))
-#     e[0, i]= shift
-#     print((SumGuassian(x+e, centers, eigenvectors, h, sigma)-SumGuassian(x, centers, eigenvectors, h, sigma))/shift)
+N = 5
+M = 7
+k = 2
+h = 0.1
+sigma = 0.2
+
+x = np.random.rand(1, M)
+centers = np.random.rand(N, M)
+eigenvectors = np.random.rand(N, M, k)
+
+N = 1
+M = 2
+k = 1
+h = 10
+sigma = 10
+x = np.array([[1,1]])
+centers = np.array([[0,0]])
+eigenvectors = np.array([[[0],[1]]])
+
+
+print(GradGuassian(x, centers, eigenvectors, h, sigma))
+for i in range(M):
+    shift = 0.0001
+    e=np.zeros((1,M))
+    e[0, i]= shift
+    print((SumGuassian(x+e, centers, eigenvectors, h, sigma)-SumGuassian(x, centers, eigenvectors, h, sigma))/shift)
 # LD(24, 0.001, 200)
 # #
 # # Set up basinhopping optimization

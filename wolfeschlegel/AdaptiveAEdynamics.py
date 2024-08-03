@@ -43,15 +43,15 @@ def autoencoder_fn(x, is_training=False):
     encoding_dim = 2
 
     x = hk.Linear(intermediate_dim)(x)
-    x = jax.nn.hard_tanh(x)
+    x = jax.nn.leaky_relu(x)
     x = hk.Linear(intermediate_dim)(x)
-    x = jax.nn.hard_tanh(x)
+    x = jax.nn.leaky_relu(x)
     encoded = hk.Linear(encoding_dim)(x)
 
     x = hk.Linear(intermediate_dim)(encoded)
-    x = jax.nn.hard_tanh(x)
+    x = jax.nn.leaky_relu(x)
     x = hk.Linear(intermediate_dim)(x)
-    x = jax.nn.hard_tanh(x)
+    x = jax.nn.leaky_relu(x)
     # decoded = jax.numpy.abs(hk.Linear(input_dim)(x))  # This led to large loss values
     decoded = hk.Linear(input_dim)(x)
     return decoded, encoded
@@ -719,7 +719,7 @@ def run(filename=None, T=4):
     np.savez(savename, trajectory=trajectory, qs=qs, encoder_params_list=encoder_params_list)
 
     NstepsDeposite = int(Tdeposite / dt)
-    # main_plot(trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, height, NstepsDeposite, T)
+    main_plot(trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, height, NstepsDeposite, T)
     
     return first_occurrence_index_1, first_occurrence_index_2, first_occurrence_index_3, np.mean(sigma_list)
     
@@ -745,7 +745,7 @@ if __name__ == '__main__':
 
     results = []
 
-    for _ in range(10):
+    for _ in range(1):
         i_1, i_2, i_3, sigma = run(T=100)
         results.append((i_1, i_2, i_3, sigma))
 

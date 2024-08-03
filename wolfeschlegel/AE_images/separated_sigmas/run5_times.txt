@@ -1,0 +1,3 @@
+The first time step where the first dimension is greater than 0 is: 1325
+The first time step where the second dimension is less than 0 is: 4204
+The first time step where the first dimension is greater than zero and the second dimension is less than 0 is: 4617

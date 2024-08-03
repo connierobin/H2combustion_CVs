@@ -20,29 +20,57 @@ import random
 import time
 
 # Global dimensionality of the system
-n = 1
+n = 0
 
-def potential(qx, qy, qn):
+def triple_well(self, qx, qy):
+    # qx = q[:,:1]
+    # qy = q[:,1:]
+    V = 3*np.exp(-qx**2-(qy-1/3)**2)-3*np.exp(-qx**2-(qy-5/3)**2)-5*np.exp(-(qx-1)**2-qy**2)-5*np.exp(-(qx+1)**2-qy**2)+0.2*qx**4+0.2*(qy-0.2)**4
+    return V
+
+def grad_triple_well(self, qnow):
+    
+    qx = qnow[:, 0:1]
+    qy = qnow[:, 1:2]
+    
+    Vx = (-2*qx)*3*np.exp(-qx**2-(qy-1/3)**2)\
+        -(-2*qx)*3*np.exp(-qx**2-(qy-5/3)**2)\
+        -(-2*(qx-1))*5*np.exp(-(qx-1)**2-qy**2)\
+        -(-2*(qx+1))*5*np.exp(-(qx+1)**2-qy**2)\
+        +4*0.2*qx**3
+
+    Vy = (-2*(qy-1/3))*3*np.exp(-qx**2-(qy-1/3)**2)\
+        -(-2*(qy-5/3))*3*np.exp(-qx**2-(qy-5/3)**2)\
+        -(-2*qy)*5*np.exp(-(qx-1)**2-qy**2)\
+        -(-2*qy)*5*np.exp(-(qx+1)**2-qy**2)\
+        +4*0.2*(qy-0.2)**3
+
+    return np.concatenate((Vx, Vy), axis=1)
+
+def wolfeschlegel(qx, qy, qn):
     V = 10 * (qx**4 + qy**4 - 2 * qx**2 - 4 * qy**2 + qx * qy + 0.2 * qx + 0.1 * qy + 10 * jnp.sum(qn**2))
     return V
 
-
-def gradV(q):
+def grad_wolfeschlegel(q):
     qx = q[:, 0:1]
     qy = q[:, 1:2]
     qn = q[:, 2:]
     Vx = 10 * (4 * qx**3 - 4 * qx + qy + 0.2)
     Vy = 10 * (4 * qy**3 - 8 * qy + qx + 0.1)
-    Vn = 10 * 2*qn
+    Vn = 100 * 2*qn
     grad = jnp.concatenate((Vx, Vy, Vn), axis=1)
     return grad
 
+def gradV(q, potential):
+    if potential == 'triplewell':
+        return grad_triple_well(q)
+    return grad_wolfeschlegel(q)
 
 # Define the autoencoder
 def autoencoder_fn(x, is_training=False):
     input_dim = x.shape[-1]
     intermediate_dim = 64
-    encoding_dim = 2
+    encoding_dim = 1
 
     x = hk.Linear(intermediate_dim)(x)
     x = jax.nn.leaky_relu(x)
@@ -63,7 +91,9 @@ def autoencoder_fn(x, is_training=False):
 autoencoder = hk.without_apply_rng(hk.transform(autoencoder_fn))
 
 
-def initialize_autoencoder(rng, sample):
+def initialize_autoencoder(rng):
+    # Note: the default initialization in haiku is a truncated normal, which is good but not ideal for leaky ReLU
+    sample = jnp.ones((1, 2 + n))
     params = autoencoder.init(rng, sample, is_training=True)
     return params
 
@@ -94,7 +124,11 @@ def train_epoch(params, data, opt_state, update_fn, batch_size):
     return params, opt_state, loss
 
 
-def train_autoencoder(data, params, opt_state, optimizer, epochs=2000, batch_size=4, threshold=-1.):
+def train_autoencoder(data, params, opt_state, optimizer, rng, epochs=2000, batch_size=4, threshold=-1., reset_params=False):
+    if reset_params:
+        # Initialize the autoencoder
+        params = initialize_autoencoder(rng)
+
     update_fn = optimizer.update
     for epoch in range(epochs):
         # data = jax.random.permutation(jax.random.PRNGKey(epoch), data)
@@ -113,8 +147,8 @@ def train_autoencoder(data, params, opt_state, optimizer, epochs=2000, batch_siz
 
     return params, opt_state, encoded_values, decoded_values, epoch
 
-def AE(data, params, opt_state, optimizer, threshold=-1.):
-    params, opt_state, encoded_values, decoded_values, epoch = train_autoencoder(data, params, opt_state, optimizer, threshold=threshold)
+def AE(data, params, opt_state, optimizer, rng, threshold=-1., reset_params=False):
+    params, opt_state, encoded_values, decoded_values, epoch = train_autoencoder(data, params, opt_state, optimizer, rng, threshold=threshold, reset_params=reset_params)
 
     return params, opt_state, encoded_values, decoded_values, epoch
 
@@ -292,27 +326,27 @@ def calculate_scale_factor(center, encoder_params, h, sigmas):
     # x_projected_sq_sum = jnp.sum(x_projected**2)
     # gauss_value = h * jnp.exp(-x_projected_sq_sum / (2 * sigmas**2))
     gauss_value = h
-    print(f'gauss_value: {gauss_value}')
+    # print(f'gauss_value: {gauss_value}')
     # desired_value = h * (1 / (jnp.sqrt(2 * jnp.pi * sigma**2)))
     desired_value = h
-    print(f'desired_value: {desired_value}')
-    print(f'scale factor: {desired_value / gauss_value}')
+    # print(f'desired_value: {desired_value}')
+    # print(f'scale factor: {desired_value / gauss_value}')
     return desired_value / gauss_value
 
 
 # @jax.jit
-def next_step(qnow, qs, encoder_params_list, scale_factors, height, sigma_list, decay_sigma, dt=1e-3, beta=1.0, step_cap=0.3):
+def next_step(qnow, qs, encoder_params_list, scale_factors, height, sigma_list, decay_sigma, dt=1e-3, beta=1.0, step_cap=0.3, potential='wolfeschlegel'):
     seed = int(time.time() * 1e6)  # Generate a seed based on the current time in microseconds
     rng_key = jax.random.PRNGKey(seed)
     rng_key, subkey = jax.random.split(rng_key)
 
     if qs is None:
-        step = (- gradV(qnow)) * dt + jnp.sqrt(2 * dt / beta) * jax.random.normal(subkey, shape=qnow.shape)
+        step = (- gradV(qnow, potential)) * dt + jnp.sqrt(2 * dt / beta) * jax.random.normal(subkey, shape=qnow.shape)
         step_size = jnp.linalg.norm(step)
         capped_step = jnp.where(step_size > step_cap, step * (step_cap / step_size), step)
         qnext = qnow + capped_step
     else:
-        step = (- (gradV(qnow) + GradGaussian(qnow, qs, encoder_params_list, scale_factors, height, sigma_list, decay_sigma))) * dt + jnp.sqrt(
+        step = (- (gradV(qnow, potential) + GradGaussian(qnow, qs, encoder_params_list, scale_factors, height, sigma_list, decay_sigma))) * dt + jnp.sqrt(
             2 * dt / beta) * jax.random.normal(subkey, shape=qnow.shape)
         # step = (- gradV(qnow)) * dt + jnp.sqrt(2 * dt / beta) * jax.random.normal(subkey, shape=qnow.shape)
         step_size = jnp.linalg.norm(step)
@@ -346,7 +380,7 @@ def GradAtCenter(centers, encoder_params_list, scale_factors, h, sigma_list, dec
 #     return vmap_grad_center(centers, encoder_params_list, scale_factors)
 
 
-def MD(q0, T, Tdeposite, height, sigma_factor, rng, decay_sigma, dt=1e-3, beta=1.0, n=0, threshold=-1.):
+def MD(q0, T, Tdeposite, height, sigma_factor, rng, decay_sigma, dt=1e-3, beta=1.0, n=0, threshold=-1., reset_params=False):
     Nsteps = int(T / dt)
     NstepsDeposite = int(Tdeposite / dt)
     Ncenter = int(NstepsDeposite / 2)
@@ -357,11 +391,8 @@ def MD(q0, T, Tdeposite, height, sigma_factor, rng, decay_sigma, dt=1e-3, beta=1
     qs = None
 
 
-    # Sample data for initialization
-    sample = jnp.ones((1, 2 + n))
-
     # Initialize the autoencoder
-    params = initialize_autoencoder(rng, sample)
+    params = initialize_autoencoder(rng)
     encoder_params_list = [params]
 
     sigma_list = []
@@ -388,7 +419,7 @@ def MD(q0, T, Tdeposite, height, sigma_factor, rng, decay_sigma, dt=1e-3, beta=1
                 data = np.squeeze(data, axis=1)  # (100, 2)
                 mean_vector = np.mean(data, axis=0, keepdims=True)
                 center_vector = np.array([data[Ncenter]])
-                params, opt_state, encoded_values, decoded_values, epoch = AE(data, params, opt_state, optimizer, threshold=threshold)
+                params, opt_state, encoded_values, decoded_values, epoch = AE(data, params, opt_state, optimizer, threshold=threshold, reset_params=reset_params, rng=rng)
                 epochs_list.append(epoch)
                 encoder_params_list[0] = params     # overwrite initializer values
                 # qs = mean_vector                #data[-2:-1]#mean_vector
@@ -408,7 +439,7 @@ def MD(q0, T, Tdeposite, height, sigma_factor, rng, decay_sigma, dt=1e-3, beta=1
                 data = np.squeeze(data, axis=1)  # (100, 2)
                 # mean_vector = np.mean(data, axis=0, keepdims=True)
                 center_vector = np.array([data[Ncenter]])
-                params, opt_state, encoded_values, decoded_values, epoch = AE(data, params, opt_state, optimizer, threshold=threshold)
+                params, opt_state, encoded_values, decoded_values, epoch = AE(data, params, opt_state, optimizer, threshold=threshold, reset_params=reset_params, rng=rng)
                 epochs_list.append(epoch)
                 encoder_params_list.append(params)
                 # qs = np.concatenate([qs, mean_vector], axis=0)
@@ -458,6 +489,7 @@ def run(filename=None, T=4):
     height = 4.
     sigma_factor = 3.
     decay_sigma = 0.7
+    reset_params = True
     threshold = 0.003
     ic_method = 'AE'
     potential = 'wolfeschlegel'
@@ -472,7 +504,7 @@ def run(filename=None, T=4):
     max_qn_val = 20     # size of the relevant part of the potential surface
 
     q0 = np.concatenate((np.array([[-2.0, 2.0]]), np.array([np.random.rand(n)*(2*max_qn_val) - max_qn_val])), axis=1)
-    trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, epochs_list = MD(q0, T, Tdeposite=Tdeposite, height=height, sigma_factor=sigma_factor, decay_sigma=decay_sigma, rng=rng, dt=dt, beta=beta, n=n, threshold=threshold)  # (steps, bs, dim)
+    trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, epochs_list = MD(q0, T, Tdeposite=Tdeposite, height=height, sigma_factor=sigma_factor, decay_sigma=decay_sigma, rng=rng, dt=dt, beta=beta, n=n, threshold=threshold, reset_params=False)  # (steps, bs, dim)
     
     # TODO: add in parameter for which autoencoder to use -- to change the number of layers, the activations, whether the params are reset, etc.
     simulation_settings = {
@@ -485,6 +517,7 @@ def run(filename=None, T=4):
         'sigma_factor': sigma_factor,
         'decay_sigma': decay_sigma,
         'threshold': threshold,
+        'reset_params': reset_params,
         'ic_method': ic_method,
         'potential': potential,
         'max_qn_val': max_qn_val,
@@ -516,8 +549,8 @@ if __name__ == '__main__':
     parser.add_argument('--trial', type=int, default=0)
     args = parser.parse_args()
 
-    for i in range(1):
-        name = f'results/run_n1earlystop_{i+4}.h5'
+    for i in range(7):
+        name = f'results/run_ws_n0_k1_{i+4}.h5'
         run(filename=name, T=100)
 
 

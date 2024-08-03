@@ -2,6 +2,7 @@ import h5py
 import json
 import matplotlib.pyplot as plt
 import numpy as np
+import math
 import jax
 from jax import vmap
 import jax.numpy as jnp
@@ -17,7 +18,7 @@ import re
 def autoencoder_fn(x, is_training=False):
     input_dim = x.shape[-1]
     intermediate_dim = 64
-    encoding_dim = 2
+    encoding_dim = 1
 
     x = hk.Linear(intermediate_dim)(x)
     x = jax.nn.leaky_relu(x)
@@ -143,7 +144,7 @@ def wolfeschlegel_potential(qx, qy, qn):
     V = 10 * (qx**4 + qy**4 - 2 * qx**2 - 4 * qy**2 + qx * qy + 0.2 * qx + 0.1 * qy + jnp.sum(qn**2))
     return V
 
-def main_plot(potential, n, trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, epochs_list, decay_sigma, height, NstepsDeposite, T, threshold, timings):
+def main_plot(potential, potential_name, n, trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, epochs_list, decay_sigma, height, NstepsDeposite, T, threshold, timings):
     filename = None
 
     cmap = plt.get_cmap('plasma')
@@ -155,13 +156,15 @@ def main_plot(potential, n, trajectory, qs, encoder_params_list, scale_factors, 
     W1 = W.copy()
     W1 = W1.at[W > 300].set(float('nan'))  # Use JAX .at[] method
 
-    fig = plt.figure()
+    fig = plt.figure(figsize=(14,6))
     ax1 = fig.add_subplot(1, 3, 1)
     contourf_ = ax1.contourf(X, Y, W1, levels=29)
     plt.colorbar(contourf_)
 
     indices = np.arange(trajectory.shape[0])
     ax1.scatter(trajectory[:, 0, 0], trajectory[:, 0, 1], c=indices, cmap=cmap)
+    ax1.set(xlim=(-3, 3), ylim=(-3, 3))
+    plt.title('Trajectory')
 
     num_points = X.shape[0] * X.shape[1]
 
@@ -186,18 +189,21 @@ def main_plot(potential, n, trajectory, qs, encoder_params_list, scale_factors, 
     plt.colorbar(cnf2)
     indices = np.arange(qs.shape[0])
     ax2.scatter(qs[:, 0], qs[:, 1], c=indices, cmap=cmap)
+    ax2.set(xlim=(-3, 3), ylim=(-3, 3))
+    plt.title('Gaussian Bias')
     # ax2.quiver(qs[:, 0], qs[:, 1])
     ax2.quiver(qs[:, 0], qs[:, 1], gradient_directions[:, 0], gradient_directions[:, 1])
-    ax2.axis('equal')
+    # ax2.axis('equal')
     indices = np.arange(trajectory.shape[0])
     # ax2.scatter(trajectory[:, 0, 0], trajectory[:, 0, 1], c=indices, cmap=cmap, alpha=0.1)
 
     # ax2.scatter(trajectory[:, 0], trajectory[:, 1], c=indices, cmap=cmap)
     ax3 = fig.add_subplot(1, 3, 3)
     cnf3 = ax3.contourf(X, Y, Sum, levels=29)
+    ax3.set(xlim=(-3, 3), ylim=(-3, 3))
 
     # fig.colorbar(contourf_)
-    plt.title('Local AE dynamics')
+    plt.title('Biased Potential')
     if filename is None:
         plt.show()
     else:
@@ -232,14 +238,14 @@ def main_plot(potential, n, trajectory, qs, encoder_params_list, scale_factors, 
     # PLOT EPOCHS #
     ###############
 
-    fig_epoch, ax_epoch = plt.subplots()
+    fig_epoch, ax_epoch = plt.subplots(figsize=(10,5))
     np_epochs_list = np.array(epochs_list)
     N = np_epochs_list.shape[0]
     indices = np.arange(N)
     ax_epoch.scatter(indices, np_epochs_list, label=f'Epoch When Loss < {threshold}')
-    ax_epoch.axvline(x=timings[0]/100, color='r', linestyle='--', label=f'Upper Right Well at Time {timings[0]/100}')
-    ax_epoch.axvline(x=timings[1]/100, color='g', linestyle='--', label=f'Lower Left Well at Time {timings[1]/100}')
-    ax_epoch.axvline(x=timings[2]/100, color='b', linestyle='--', label=f'Lower Right Well at Time {timings[2]/100}')
+    ax_epoch.axvline(x=timings[0]/100, color='r', linestyle='--', label=f'Upper Right Well at Time {math.ceil(timings[0]/100)}')
+    ax_epoch.axvline(x=timings[2]/100, color='b', linestyle='--', label=f'Lower Right Well at Time {math.ceil(timings[2]/100)}')
+    ax_epoch.axvline(x=timings[1]/100, color='g', linestyle='--', label=f'Lower Left Well at Time {math.ceil(timings[1]/100)}')
     plt.xlabel('Iteration')
     plt.ylabel(f'Epoch')
     plt.title('Early Stopping Epoch')
@@ -250,18 +256,18 @@ def main_plot(potential, n, trajectory, qs, encoder_params_list, scale_factors, 
     ###############
     # PLOT SIGMAS #
     ###############
-    fig_sigma, ax_sigma = plt.subplots()
+    fig_sigma, ax_sigma = plt.subplots(figsize=(10,5))
     np_sigma_list = np.array(sigma_list)
     N, K = np_sigma_list.shape
     indices = np.arange(N)
     for k in range(K):
-        ax_sigma.scatter(indices, np_sigma_list[:, k], label=f'K={k}')
-    ax_sigma.axvline(x=timings[0]/100, color='r', linestyle='--', label=f'Upper Right Well at Time {timings[0]/100}')
-    ax_sigma.axvline(x=timings[1]/100, color='g', linestyle='--', label=f'Lower Left Well at Time {timings[1]/100}')
-    ax_sigma.axvline(x=timings[2]/100, color='b', linestyle='--', label=f'Lower Right Well at Time {timings[2]/100}')
+        ax_sigma.scatter(indices, np_sigma_list[:, k], label=f'AE Latent Variable {k+1}')
+    ax_sigma.axvline(x=timings[0]/100, color='r', linestyle='--', label=f'Upper Right Well at Time {math.ceil(timings[0]/100)}')
+    ax_sigma.axvline(x=timings[2]/100, color='b', linestyle='--', label=f'Lower Right Well at Time {math.ceil(timings[2]/100)}')
+    ax_sigma.axvline(x=timings[1]/100, color='g', linestyle='--', label=f'Lower Left Well at Time {math.ceil(timings[1]/100)}')
     plt.xlabel('Iteration')
     plt.ylabel('Sigma value')
-    plt.title('Gaussian sigma values / Average encoding variance')
+    plt.title('Gaussian sigma values')
     plt.legend()
     plt.show()
 
@@ -299,6 +305,8 @@ def visualize_encoded_data(data, params):
     return encoded_data
 
 def plot_encoded_data(encoded_data, gaussian_values):
+    if encoded_data.shape[1] == 1:
+        plot_encoded_data_1D(encoded_data, gaussian_values)
     plt.figure(figsize=(8, 6))
     scatter = plt.scatter(encoded_data[:, 0], encoded_data[:, 1], c=gaussian_values, cmap=plt.get_cmap('plasma'), label='Encoded Data with Gaussian Value')
     plt.colorbar(scatter, label='Gaussian Value')
@@ -311,6 +319,22 @@ def plot_encoded_data(encoded_data, gaussian_values):
     plt.xlabel('Encoded Dimension 1')
     plt.ylabel('Encoded Dimension 2')
     plt.title('Encoded Data in 2D Space')
+    plt.legend()
+    plt.show()
+
+def plot_encoded_data_1D(encoded_data, gaussian_values):
+    plt.figure(figsize=(8, 6))
+    scatter = plt.scatter(range(len(encoded_data)), encoded_data[:, 0], c=gaussian_values, cmap=plt.get_cmap('plasma'), label='Encoded Data with Gaussian Value')
+    plt.colorbar(scatter, label='Gaussian Value')
+
+    annotate = False
+    if annotate:
+        for i in range(len(encoded_data)):
+            plt.annotate(f'{i}, {encoded_data[i]}', (encoded_data[i, 0]))
+
+    plt.xlabel('Datapoint')
+    plt.ylabel('Encoded Dimension')
+    plt.title('Encoded Data')
     plt.legend()
     plt.show()
 
@@ -421,6 +445,8 @@ def load_data(filename):
     pot_fn = None
     if parameters['potential'] == 'wolfeschlegel':
         pot_fn = wolfeschlegel_potential
+    if parameters['potential'] == 'rosenbrock':
+        pot_fn = rosenbrock_potential
     
     Tdeposite = parameters['Tdeposite']
     dt = parameters['dt']
@@ -428,7 +454,7 @@ def load_data(filename):
 
     timings = findTSTime(trajectory)
 
-    main_plot(pot_fn, parameters['n'], trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, epochs_list, parameters['decay_sigma'], parameters['height'], NstepsDeposite, parameters['T'], parameters['threshold'], timings)
+    # main_plot(pot_fn, parameters['potential'], parameters['n'], trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, epochs_list, parameters['decay_sigma'], parameters['height'], NstepsDeposite, parameters['T'], parameters['threshold'], timings)
 
     return timings
 
@@ -438,8 +464,8 @@ if __name__ == '__main__':
     # load_data(filename)
 
     results = []
-    for i in range(1):
-        filename = f'../results/run_n1earlystop_{i+4}.h5'
+    for i in range(10):
+        filename = f'../results/run_ws_n0_k1_{i+1}.h5'
         results.append(load_data(filename))
     for result in results:
         print(f'{result[0]}, {result[1]}, {result[2]}')

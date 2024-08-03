@@ -245,7 +245,7 @@ def findTSTime(trajectory):
 
 def run(T=100):
     # number of extra dimensions
-    n = 3
+    n = 0
 
     xx = np.linspace(-3, 3, 200)
     yy = np.linspace(-5, 5, 200)
@@ -261,6 +261,7 @@ def run(T=100):
 
     # T = 100
     # T = 10
+    T = 30
     dt = 1e-2
     beta = 50
     Tdeposite = 1
@@ -284,7 +285,7 @@ def run(T=100):
 
     print(trajectory)
 
-    plotting = False
+    plotting = True
     if plotting:
         indices = np.arange(trajectory.shape[0])
         ax1.scatter(trajectory[:, 0, 0], trajectory[:, 0, 1], c=indices, cmap=cmap)
@@ -337,7 +338,7 @@ if __name__ == '__main__':
 
     results = []
     
-    for _ in range(10):
+    for _ in range(1):
         i_1, i_2, i_3 = run(T=100)
         results.append((i_1, i_2, i_3))
 

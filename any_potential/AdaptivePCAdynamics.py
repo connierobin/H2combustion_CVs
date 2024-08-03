@@ -1,25 +1,69 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import argparse
+import h5py
+import json
 from tqdm import tqdm
 import numpy.linalg as la
+import tensorflow as tf
+from tensorflow.keras import Sequential
+from tensorflow.keras.layers import Input, Dense
+from tensorflow.keras.models import Model
+import jax
+import jax.numpy as jnp
+import jax.scipy as jscipy
+from jax import vmap
+from functools import partial
+import haiku as hk
+import optax
+import random
+import time
 
-def potential(qx, qy, qn):
-    V = 10 * (qx**4 + qy**4 - 2 * qx**2 - 4 * qy**2 + qx * qy + 0.2 * qx + 0.1 * qy + 10 * np.sum(qn**2))
+# Global dimensionality of the system
+n = 0
+
+def potential(qx, qy, qn, pot_name):
+    if pot_name == 'rosenbrock':
+        return rosenbrock_potential(qx, qy, qn)
+    elif pot_name == 'wolfeschlegel':
+        return wolfeschlegel_potential(qx, qy, qn)
+    return wolfeschlegel_potential(qx, qy, qn)
+
+def gradV(q, pot_name):
+    if pot_name == 'rosenbrock':
+        return grad_rosenbrock(q)
+    elif pot_name == 'wolfeschlegel':
+        return grad_wolfeschlegel(q)
+    return grad_wolfeschlegel(q)
+
+def wolfeschlegel_potential(qx, qy, qn):
+    V = 10 * (qx**4 + qy**4 - 2 * qx**2 - 4 * qy**2 + qx * qy + 0.2 * qx + 0.1 * qy + 10 * jnp.sum(qn**2))
     return V
 
-def gradV(q):
+def grad_wolfeschlegel(q):
     qx = q[:, 0:1]
     qy = q[:, 1:2]
     qn = q[:, 2:]
     Vx = 10 * (4 * qx**3 - 4 * qx + qy + 0.2)
     Vy = 10 * (4 * qy**3 - 8 * qy + qx + 0.1)
-    Vn = 10 * 2*qn
-    grad = np.concatenate((Vx, Vy, Vn), axis=1)
+    Vn = 100 * 2*qn
+    grad = jnp.concatenate((Vx, Vy, Vn), axis=1)
     return grad
 
-def getCVs(data, ic_method='PCA'):
-    return PCA(data)
+def rosenbrock_potential(qx, qy, qn):
+    V = 100 * (qy - qx**2)**2 + (1 - qx)**2 + 100 * jnp.sum(qn**2)
+    return V
+
+def grad_rosenbrock(q):
+    qx = q[:, 0:1]
+    qy = q[:, 1:2]
+    qn = q[:, 2:]
+    Vx = -400 * qx * (qy - qx**2) - 2 * (1 - qx)
+    Vy = 200 * (qy - qx**2)
+    Vn = 100 * 2*qn
+    grad = jnp.concatenate((Vx, Vy, Vn), axis=1)
+    return grad
+
 
 def PCA(data):  # datasize: N * dim
     # Step 4.1: Compute the mean of the data
@@ -53,212 +97,212 @@ def PCA(data):  # datasize: N * dim
 
     # print(np.dot(centered_data, selected_eigenvectors)-np.matmul(centered_data, selected_eigenvectors))
     # print(eigenvalues, eigenvalues.shape)
-    return mean_vector, selected_eigenvectors, eigenvalues
+    return selected_eigenvectors, eigenvalues, transformed_data
 
-def GaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma, decay_sigma):
+# NOTE: this function is currently NOT IN USE it is mainly for plotting
+def GaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma):
     choose_eigenvalue_ = np.expand_dims(choose_eigenvalue, axis=1)
+    # TODO: put in adjustable sigma values for PCA as well
+    # TODO: put in envelope/decay Gaussians
 
     V = np.empty((q.shape[0], 1))
     for i in range(q.shape[0]):
-        x_minus_centers_orig = q[i:i + 1] - qs  # N * M
-        x_minus_centers = np.expand_dims(x_minus_centers_orig, axis=1)  # N * 1 * M
+        x_minus_centers = q[i:i + 1] - qs  # N * M
+        x_minus_centers = np.expand_dims(x_minus_centers, axis=1)  # N * 1 * M
         x_projected = np.matmul(x_minus_centers, eigenvectors)
         x_projected_ = x_projected * choose_eigenvalue_
 
-        cart_dist = np.linalg.norm(x_minus_centers_orig, axis=1)    # N
-        decay_factors = np.exp(-cart_dist / (2 * decay_sigma**2))   # N
 
         x_projected_sq_sum = np.sum((x_projected_) ** 2, axis=(-2, -1))  # N
-
-        # print(f'x_minus_centers_orig.shape: {x_minus_centers_orig.shape}')
-        # print(f'decay_factors.shape: {decay_factors.shape}')
-        # test1 = np.sum(height * np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2), axis=0)
-        # print(f'test1.shape: {test1.shape}')
-        # test2 = np.sum(height * decay_factors * np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2), axis=0)
-        # print(f'test2.shape: {test2.shape}')
-        # test3 = np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2)
-        # print(f'test3.shape: {test3.shape}')
-        # test4 = decay_factors * np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2)
-        # print(f'test4.shape: {test4.shape}')
-
-        # test5 = height * np.dot(decay_factors, np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2))
-        # print(f'test5.shape: {test5.shape}')
 
         V[i] = np.sum(height * np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2), axis=0)
-        # V[i] = np.sum(height * decay_factors * np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2), axis=0)
-        V[i] = height * np.dot(decay_factors, np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2))
 
     return V
 
+# # This function is used for taking derivatives with jax -- outdated version with only one sigma value
+# def SumGaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma):
+#     choose_eigenvalue_ = jnp.expand_dims(choose_eigenvalue, axis=1)
 
-def GaussiansDecay(q, qs, eigenvectors, choose_eigenvalue, height, sigma, decay_sigma):
-    choose_eigenvalue_ = np.expand_dims(choose_eigenvalue, axis=1)
+#     # V = np.empty((q.shape[0], 1))
+#     V = 0.0
+#     for i in range(q.shape[0]):
+#         x_minus_centers = q[i:i + 1] - qs  # N * M
+#         x_minus_centers = jnp.expand_dims(x_minus_centers, axis=1)  # N * 1 * M
+#         x_projected = jnp.matmul(x_minus_centers, eigenvectors)
+#         x_projected_ = x_projected * choose_eigenvalue_
+#         x_projected_sq_sum = jnp.sum((x_projected_) ** 2, axis=(-2, -1))  # N
 
-    V = np.empty((q.shape[0], 1))
+#         V += jnp.sum(height * jnp.exp(-jnp.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2), axis=0)
+
+#     return V
+
+# This function is used for taking derivatives with jax
+def SumGaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma_list):
+    choose_eigenvalue_ = jnp.expand_dims(choose_eigenvalue, axis=1)
+
+    V = 0.0
     for i in range(q.shape[0]):
-        x_minus_centers_orig = q[i:i + 1] - qs  # N * M
-        x_minus_centers = np.expand_dims(x_minus_centers_orig, axis=1)  # N * 1 * M
-        x_projected = np.matmul(x_minus_centers, eigenvectors)
+        x_minus_centers = q[i:i + 1] - qs  # N * M
+        x_minus_centers = jnp.expand_dims(x_minus_centers, axis=1)  # N * 1 * M
+        x_projected = jnp.matmul(x_minus_centers, eigenvectors)
         x_projected_ = x_projected * choose_eigenvalue_
+        x_projected_sq_sum = jnp.sum((x_projected_) ** 2, axis=(-2, -1))  # N
 
-        cart_dist = np.linalg.norm(x_minus_centers_orig, axis=1)    # N
-        decay_factors = np.exp(-cart_dist / (2 * decay_sigma**2))   # N
-
-        x_projected_sq_sum = np.sum((x_projected_) ** 2, axis=(-2, -1))  # N
-
-        # print(f'x_minus_centers_orig.shape: {x_minus_centers_orig.shape}')
-        # print(f'decay_factors.shape: {decay_factors.shape}')
-        # test1 = np.sum(height * np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2), axis=0)
-        # print(f'test1.shape: {test1.shape}')
-        # test2 = np.sum(height * decay_factors * np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2), axis=0)
-        # print(f'test2.shape: {test2.shape}')
-        # test3 = np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2)
-        # print(f'test3.shape: {test3.shape}')
-        # test4 = decay_factors * np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2)
-        # print(f'test4.shape: {test4.shape}')
-
-        # test5 = height * np.dot(decay_factors, np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2))
-        # print(f'test5.shape: {test5.shape}')
-
-        # V[i] = np.sum(height * decay_factors * np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2), axis=0)
-        V[i] = np.sum(decay_factors)
+        x_projected_sq = jnp.sum((x_projected_) ** 2, axis=(1))
+        another_exponent = - x_projected_sq / 2 / sigma_list ** 2
+        V += jnp.sum(height * jnp.exp(another_exponent), axis=0)
 
     return V
 
-def gradGaussiansDecay(q, qs, eigenvectors, choose_eigenvalue, height, sigma, decay_sigma):
-    # print(q.shape, qs.shape, choose_eigenvalue.shape)
-    # x: 1 * M
-    # centers: N * M
-    # eigenvectors: N * M * k
-    # choose_eigenvalue: N*M
+jax_PCASumGaussian = jax.grad(SumGaussiansPCA)
+jax_PCASumGaussian_jit = jax.jit(jax_PCASumGaussian)
 
-    choose_eigenvalue_ = np.expand_dims(choose_eigenvalue, axis=1) # N*1*M
+def PCAGradGaussians(q, qs, eigenvectors, choose_eigenvalue, height, sigma_list):
+    # print(f'jax_PCASumGaussian_jit._cache_size: {jax_PCASumGaussian_jit._cache_size()}')
+    # scale_factors_jnp = jnp.array(scale_factors)        # N * D
+    # sigma_list_jnp = jnp.array(sigma_list)
 
-    x_minus_centers_orig = q - qs  # N * M
-    x_minus_centers = np.expand_dims(x_minus_centers_orig, axis=1)  # N * 1 * M
-    x_projected = np.matmul(x_minus_centers, eigenvectors)  # N * 1 * k
+    q_jnp = jnp.array(q)
+    qs_jnp = jnp.array(qs)
+    eigenvectors_jnp = jnp.array(eigenvectors)
+    choose_eigenvalue_jnp = jnp.array(choose_eigenvalue)
+    sigma_list_jnp = jnp.array(sigma_list)
 
-    x_projected_ = x_projected * choose_eigenvalue_
-    eigenvectors_ = eigenvectors * choose_eigenvalue_
-
-    x_projected_sq_sum = np.sum((x_projected_)** 2, axis=(-2, -1))  # N
-
-    cart_dist = np.linalg.norm(x_minus_centers_orig, axis=1)    # N
-    # Note: a factor of 2 came down from cart_dist because cart_dist is actually x^2 not x
-    decay_factors = (-1. / (decay_sigma**2)) * np.exp(-cart_dist / (2 * decay_sigma**2))    # N (ideally)
-
-    print(f'decay_factors.shape: {decay_factors.shape}')
-
-    decay_factors = np.matmul(decay_factors, x_minus_centers_orig)
-    decay_factors = decay_factors * (-1. / (2 * decay_sigma**2))
-
-    print(f'x_minus_centers_orig.shape: {x_minus_centers_orig.shape}')
-    print(f'cart_dist.shape: {cart_dist.shape}')
-    print(f'decay_factors.shape: {decay_factors.shape}')
-
-    # TODO: FIX by using the PRODUCT RULE
-    # exps = -height / sigma ** 2 * np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2)  # N * 1
-
-    # # print(f'exps.shape: {exps.shape}')
-    # before_exps = np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2)
-    # # print(f'before_exps.shape: {before_exps}')
-    # before_decay_factors = np.exp(-cart_dist / (2 * decay_sigma**2))
-    # # print(f'before_decay_factors: {before_decay_factors}')
-    # # new_exps = np.multiply(before_decay_factors, exps.T).T + np.multiply(decay_factors, before_exps.T).T
-    # # test1 = np.multiply(before_decay_factors, exps.T).T
-    # # print(f'term 1 shape: {test1.shape}')
-    # # test2 = np.multiply(decay_factors, before_exps.T).T
-    # # print(f'term 2 shape: {test2.shape}')
-    # # print(f'new_exps.shape: {new_exps.shape}')
-
-    # # exps = np.multiply(decay_factors, exps.T).T
-    # exps = np.multiply(before_decay_factors, exps.T).T + np.multiply(decay_factors, before_exps.T).T
-    # PTPx = np.matmul(eigenvectors_, np.transpose(x_projected_, axes=(0, 2, 1)))  # N * M * 1
-    # PTPx = np.squeeze(PTPx, axis=2)  # N * M
-    # grad = np.sum(exps * PTPx, axis=0, keepdims=True)  # 1 * M
-
-    # Gs_x = height * np.sum(
-    #     eigenvectors.T[:, 0:1] * (-np.sum((q - qs) * eigenvectors.T, axis=1, keepdims=True)) / sigma ** 2 * (
-    #         np.exp(-np.sum((q - qs) * eigenvectors.T, axis=1, keepdims=True) ** 2 / 2 / sigma ** 2)), axis=0,
-    #     keepdims=True)
-    # Gs_y = height * np.sum(
-    #     eigenvectors.T[:, 1:2] * (-np.sum((q - qs) * eigenvectors.T, axis=1, keepdims=True)) / sigma ** 2 * (
-    #         np.exp(-np.sum((q - qs) * eigenvectors.T, axis=1, keepdims=True) ** 2 / 2 / sigma ** 2)), axis=0,
-    #     keepdims=True)
-
-    # print(f'grad: {grad}')
-    return decay_factors    #np.concatenate((Gs_x, Gs_y), axis=1)
+    grad = jax.grad(lambda x: jnp.sum(SumGaussiansPCA(x, qs_jnp, eigenvectors_jnp, choose_eigenvalue_jnp, height, sigma_list_jnp)))(q_jnp)
+    # return jnp.zeros(grad.shape)
+    # print(f'gradients.shape: {(jnp.sum(grad, axis=0)).shape}')
+    return jnp.sum(grad, axis=0)
 
 
-def gradGaussians(q, qs, eigenvectors, choose_eigenvalue, height, sigma, decay_sigma):
-    # print(q.shape, qs.shape, choose_eigenvalue.shape)
-    # x: 1 * M
-    # centers: N * M
-    # eigenvectors: N * M * k
-    # choose_eigenvalue: N*M
+# def gradGaussians(q, qs, eigenvectors, choose_eigenvalue, height, sigma):
+#     # print(q.shape, qs.shape, choose_eigenvalue.shape)
+#     # x: 1 * M
+#     # centers: N * M
+#     # eigenvectors: N * M * k
+#     # choose_eigenvalue: N*M
 
-    choose_eigenvalue_ = np.expand_dims(choose_eigenvalue, axis=1) # N*1*M
+#     choose_eigenvalue_ = np.expand_dims(choose_eigenvalue, axis=1) # N*1*M
 
-    x_minus_centers_orig = q - qs  # N * M
-    x_minus_centers = np.expand_dims(x_minus_centers_orig, axis=1)  # N * 1 * M
-    x_projected = np.matmul(x_minus_centers, eigenvectors)  # N * 1 * k
+#     x_minus_centers = q - qs  # N * M
+#     x_minus_centers = np.expand_dims(x_minus_centers, axis=1)  # N * 1 * M
+#     x_projected = np.matmul(x_minus_centers, eigenvectors)  # N * 1 * k
 
-    x_projected_ = x_projected * choose_eigenvalue_
-    eigenvectors_ = eigenvectors * choose_eigenvalue_
+#     x_projected_ = x_projected * choose_eigenvalue_
+#     eigenvectors_ = eigenvectors * choose_eigenvalue_
 
-    x_projected_sq_sum = np.sum((x_projected_)** 2, axis=(-2, -1))  # N
+#     x_projected_sq_sum = np.sum((x_projected_)** 2, axis=(-2, -1))  # N
+#     exps = -height / sigma ** 2 * np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2)  # N * 1
+#     PTPx = np.matmul(eigenvectors_, np.transpose(x_projected_, axes=(0, 2, 1)))  # N * M * 1
+#     PTPx = np.squeeze(PTPx, axis=2)  # N * M
+#     grad = np.sum(exps * PTPx, axis=0, keepdims=True)  # 1 * M
 
-    cart_dist = np.linalg.norm(x_minus_centers_orig, axis=1)    # N
-    # Note: a factor of 2 came down from cart_dist because cart_dist is actually x^2 not x
-    decay_factors = (-1. / (decay_sigma**2)) * np.exp(-cart_dist / (2 * decay_sigma**2))    # N (ideally)
+#     # Gs_x = height * np.sum(
+#     #     eigenvectors.T[:, 0:1] * (-np.sum((q - qs) * eigenvectors.T, axis=1, keepdims=True)) / sigma ** 2 * (
+#     #         np.exp(-np.sum((q - qs) * eigenvectors.T, axis=1, keepdims=True) ** 2 / 2 / sigma ** 2)), axis=0,
+#     #     keepdims=True)
+#     # Gs_y = height * np.sum(
+#     #     eigenvectors.T[:, 1:2] * (-np.sum((q - qs) * eigenvectors.T, axis=1, keepdims=True)) / sigma ** 2 * (
+#     #         np.exp(-np.sum((q - qs) * eigenvectors.T, axis=1, keepdims=True) ** 2 / 2 / sigma ** 2)), axis=0,
+#     #     keepdims=True)
 
-    # print(f'decay_factors.shape: {decay_factors.shape}')
-    print(f'x_projected_sq_sum.shape: {x_projected_sq_sum.shape}')
-
-    exps = -height / sigma ** 2 * np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2)  # N * 1
-
-    # print(f'exps.shape: {exps.shape}')
-    before_exps = np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2)
-    # print(f'before_exps.shape: {before_exps}')
-    before_decay_factors = np.exp(-cart_dist / (2 * decay_sigma**2))
-    # print(f'before_decay_factors: {before_decay_factors}')
-    # new_exps = np.multiply(before_decay_factors, exps.T).T + np.multiply(decay_factors, before_exps.T).T
-    # test1 = np.multiply(before_decay_factors, exps.T).T
-    # print(f'term 1 shape: {test1.shape}')
-    # test2 = np.multiply(decay_factors, before_exps.T).T
-    # print(f'term 2 shape: {test2.shape}')
-    # print(f'new_exps.shape: {new_exps.shape}')
-
-    # exps = np.multiply(decay_factors, exps.T).T
-    # NOW WITH PRODUCT RULE
-    # exps = np.multiply(before_decay_factors, exps.T).T + np.multiply(decay_factors, before_exps.T).T
-    PTPx = np.matmul(eigenvectors_, np.transpose(x_projected_, axes=(0, 2, 1)))  # N * M * 1
-    PTPx = np.squeeze(PTPx, axis=2)  # N * M
-    grad = np.sum(exps * PTPx, axis=0, keepdims=True)  # 1 * M
-
-    # Gs_x = height * np.sum(
-    #     eigenvectors.T[:, 0:1] * (-np.sum((q - qs) * eigenvectors.T, axis=1, keepdims=True)) / sigma ** 2 * (
-    #         np.exp(-np.sum((q - qs) * eigenvectors.T, axis=1, keepdims=True) ** 2 / 2 / sigma ** 2)), axis=0,
-    #     keepdims=True)
-    # Gs_y = height * np.sum(
-    #     eigenvectors.T[:, 1:2] * (-np.sum((q - qs) * eigenvectors.T, axis=1, keepdims=True)) / sigma ** 2 * (
-    #         np.exp(-np.sum((q - qs) * eigenvectors.T, axis=1, keepdims=True) ** 2 / 2 / sigma ** 2)), axis=0,
-    #     keepdims=True)
-
-    print(f'grad.shape: {grad.shape}')
-
-    return grad#np.concatenate((Gs_x, Gs_y), axis=1)
+#     return grad#np.concatenate((Gs_x, Gs_y), axis=1)
 
 
-def MD(q0, T, Tdeposite, height, sigma, decay_sigma, dt=1e-3, beta=1.0, n=0, ic_method='PCA'):
+def calculate_scale_factor(center, encoder_params, h, sigmas):
+    # x_projected = encode(encoder_params, center - center)
+    # x_projected = jnp.zeros(center.shape)     # encode(center) - encode(center) = 0
+    # x_projected_sq_sum = jnp.sum(x_projected**2)
+    # gauss_value = h * jnp.exp(-x_projected_sq_sum / (2 * sigmas**2))
+    gauss_value = h
+    print(f'gauss_value: {gauss_value}')
+    # desired_value = h * (1 / (jnp.sqrt(2 * jnp.pi * sigma**2)))
+    desired_value = h
+    print(f'desired_value: {desired_value}')
+    print(f'scale factor: {desired_value / gauss_value}')
+    return desired_value / gauss_value
+
+
+# @jax.jit
+def next_step(qnow, qs, eigenvectors, choose_eigenvalue, height, sigma_list, pot_name, dt=1e-3, beta=1.0, step_cap=0.3):
+    seed = int(time.time() * 1e6)  # Generate a seed based on the current time in microseconds
+    rng_key = jax.random.PRNGKey(seed)
+    rng_key, subkey = jax.random.split(rng_key)
+
+
+    if qs is None:
+        step = (- gradV(qnow, pot_name)) * dt
+        step_size = jnp.linalg.norm(step)
+        capped_step = jnp.where(step_size > step_cap, step * (step_cap / step_size), step)
+        nudged_step = capped_step + jnp.sqrt(2 * dt / beta) * jax.random.normal(subkey, shape=qnow.shape)
+        qnext = qnow + nudged_step
+    else:
+        # matrix derivative [[-1.29296676e-19  7.31946182e-20  8.68774077e-18]]
+        # auto derivative [-1.2929659e-19  7.3194569e-20  8.6877349e-18]
+        # print('TEST GRADIENTS')
+        # test derivative
+        # eps = 0.0001
+        # gradGaussians is the matrix way
+        # print('matrix derivative', gradGaussians(qnow, qs, eigenvectors, choose_eigenvalue, height, sigma))
+        # print('auto derivative',PCAGradGaussians(qnow, qs, eigenvectors, choose_eigenvalue, height, sigma))
+        # # The following code throws an error, but I'm fine with it because the above code works correctly
+        # V0 = GaussiansPCA(qnow, qs, eigenvectors, choose_eigenvalue, height, sigma)
+        # for i in range(2):
+        #     q = qnow.copy()
+        #     q.at[0,i] +=  eps
+        #     print(qnow, q)
+        #     print(str(i) + ' compoenent dev: ', (GaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma) - V0)/eps)
+        #     print(f'Sum of above: {np.sum((GaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma) - V0)/eps)}')
+
+
+        step = (- (gradV(qnow, pot_name) + PCAGradGaussians(qnow, qs, eigenvectors, choose_eigenvalue, height, sigma_list))) * dt
+        # step = (- gradV(qnow)) * dt + jnp.sqrt(2 * dt / beta) * jax.random.normal(subkey, shape=qnow.shape)
+        step_size = jnp.linalg.norm(step)
+        capped_step = jnp.where(step_size > step_cap, step * (step_cap / step_size), step)
+        nudged_step = capped_step + jnp.sqrt(2 * dt / beta) * jax.random.normal(subkey, shape=qnow.shape)
+        qnext = qnow + nudged_step
+        # grad = jax.grad(lambda x: jnp.sum(JSumGaussian(x, qs, encoder_params_list, scale_factors, height, sigma)))(qnow)
+        # print(f"GradGaussian: {grad}")  # Debug print
+        # sum = jnp.sum(JSumGaussian(qnow, qs, encoder_params_list, scale_factors, height, sigma))
+        # print(f"SumGaussian: {sum}")  # Debug print
+    # print(f"qnow: {qnow}, qnext: {qnext}")  # Debug print
+    return qnext
+
+def GradAtCenter(centers, eigenvectors_list, choose_eigenvalue_list, h, sigma):
+    # gradients = []  # N * K
+    # for center, eigenvectors, choose_eigenvalue in zip(centers, eigenvectors_list, choose_eigenvalue_list):
+    #     grad = - gradV([center]) + PCAGradGaussians([center], [center], eigenvectors, choose_eigenvalue, h, sigma)
+    #     gradients.append(grad)
+    # print(f'GradAtCenter gradients.shape: {jnp.array(gradients).shape}')
+    # # return jnp.sum(jnp.array(gradients), axis=1)
+    # return jnp.array(gradients)
+    return np.zeros(centers.shape[0])
+
+
+# @jax.jit
+# def GradAtCenter(centers, encoder_params_list, scale_factors, h, sigma):
+#     def grad_center(center, encoder_params, scale_factor):
+#         grad = jax_SumGaussian_jit(center, centers, encoder_params, scale_factors, h, sigma)
+#         return grad
+    
+#     vmap_grad_center = vmap(grad_center, in_axes=(0, None))
+#     return vmap_grad_center(centers, encoder_params_list, scale_factors)
+
+
+def MD(q0, T, Tdeposite, height, sigma, sigma_factor, rng, decay_sigma, pot_name, dt=1e-3, beta=1.0, n=0, threshold=-1., reset_params=False):
     Nsteps = int(T / dt)
     NstepsDeposite = int(Tdeposite / dt)
-    trajectories = np.zeros((Nsteps + 1, q0.shape[0], 2 + n))
+    Ncenter = int(NstepsDeposite / 2)
+    trajectories = np.zeros((Nsteps + 1, q0.shape[0], q0.shape[1]))
 
-    # print(trajectories.shape)
-
-    variance = 0.7  # Threshhold for choosing number of eigenvectors
+    variance = 0.01  # Threshhold for choosing number of eigenvectors in PCA
     q = q0
+    qs = None
+
+
+    # TODO: put these back in later
+    # TODO: also delete the 'threshold' parameter
+    sigma_list = []
+    scale_factors = [1.0]  # Initialize scale factors
 
     qs = None
     eigenvectors = None
@@ -268,7 +312,7 @@ def MD(q0, T, Tdeposite, height, sigma, decay_sigma, dt=1e-3, beta=1.0, n=0, ic_
     for i in tqdm(range(Nsteps)):
 
         trajectories[i, :] = q
-        q = next_step(q, qs, eigenvectors, choose_eigenvalue, height, sigma, decay_sigma, dt, beta)
+        q = next_step(q, qs, eigenvectors, choose_eigenvalue, height, sigma_list, pot_name, dt, beta)
 
         if (i + 1) % NstepsDeposite == 0:
 
@@ -276,8 +320,12 @@ def MD(q0, T, Tdeposite, height, sigma, decay_sigma, dt=1e-3, beta=1.0, n=0, ic_
 
                 data = trajectories[:NstepsDeposite]  # (N_steps, 1, 2)
                 data = np.squeeze(data, axis=1)  # (100, 2)
-                mean_vector, selected_eigenvectors, eigenvalues = getCVs(data, ic_method)
-                qs = mean_vector#data[-2:-1]#mean_vector
+                mean_vector = np.mean(data, axis=0, keepdims=True)
+
+                selected_eigenvectors, eigenvalues, transformed_data = PCA(data)
+
+                qs = mean_vector                #data[-2:-1]#mean_vector
+                # qs = center_vector
                 eigenvectors = np.expand_dims(selected_eigenvectors, axis=0)
                 save_eigenvalues = np.expand_dims(eigenvalues, axis=0)
 
@@ -290,15 +338,30 @@ def MD(q0, T, Tdeposite, height, sigma, decay_sigma, dt=1e-3, beta=1.0, n=0, ic_
                 for s in range(idx + 1):
                     choose_eigenvalue_tmp[0, s] = 1
                 choose_eigenvalue = choose_eigenvalue_tmp
-                # print(choose_eigenvalue_tmp)
+
+                # TODO: put this back in later
+                # sigma = max(jnp.std(encoded_values, axis=0)) * sigma_factor
+                # sigmas = jnp.std(encoded_values, axis=0) * sigma_factor
+                sigmas = jnp.std(transformed_data, axis=0) * sigma_factor
+
+                # sigma_list.append(sigma)
+                sigma_list.append(sigmas)
+
+                # TODO: put this back in later?
+                # Calculate scale factor for the new center
+                # new_scale_factor = calculate_scale_factor(center_vector, params, height, sigmas)
+                # scale_factors[0] = new_scale_factor
 
             else:
                 data = trajectories[i - NstepsDeposite + 1:i + 1]
                 data = np.squeeze(data, axis=1)  # (100, 2)
-                mean_vector, selected_eigenvectors, eigenvalues = getCVs(data, ic_method)
-                # print(data[-2:-1].shape, mean_vector.shape)
-                # qs = np.concatenate([qs, data[-2:-1]], axis=0)
+                mean_vector = np.mean(data, axis=0, keepdims=True)
+
+                selected_eigenvectors, eigenvalues, transformed_data = PCA(data)
+
                 qs = np.concatenate([qs, mean_vector], axis=0)
+                # qs = np.concatenate([qs, center_vector], axis=0)
+
                 eigenvectors = np.concatenate([eigenvectors, np.expand_dims(selected_eigenvectors, axis=0)], axis=0)
                 save_eigenvalues = np.concatenate([save_eigenvalues, np.expand_dims(eigenvalues, axis=0)], axis=0)
 
@@ -311,196 +374,118 @@ def MD(q0, T, Tdeposite, height, sigma, decay_sigma, dt=1e-3, beta=1.0, n=0, ic_
                 for s in range(idx + 1):
                     choose_eigenvalue_tmp[0, s] = 1
                 choose_eigenvalue = np.concatenate([choose_eigenvalue, choose_eigenvalue_tmp], axis=0)
-                # print(choose_eigenvalue_tmp)
 
-            # print('eigenvectors shape: ', eigenvectors.shape)
+                # TODO: put these back later
+                # sigma = max(jnp.std(encoded_values, axis=0)) * sigma_factor
+                # sigmas = jnp.std(encoded_values, axis=0) * sigma_factor
+                sigmas = jnp.std(transformed_data, axis=0) * sigma_factor
+
+                # sigma_list.append(sigma)
+                sigma_list.append(sigmas)
+                # Calculate scale factor for the new center
+                # new_scale_factor = calculate_scale_factor(center_vector, params, height, sigmas)
+                # scale_factors.append(new_scale_factor)
+
 
     trajectories[Nsteps, :] = q
-    return trajectories, qs, eigenvectors, save_eigenvalues, choose_eigenvalue
+
+    # Calculate gradient directions at each center
+    gradient_directions = GradAtCenter(qs, eigenvectors, choose_eigenvalue, height, sigma)
+
+    return trajectories, qs, eigenvectors, eigenvalues, choose_eigenvalue, gradient_directions, sigma_list
 
 
-def next_step(qnow, qs, eigenvectors, choose_eigenvalue, height, sigma, decay_sigma, dt=1e-3, beta=1.0, step_cap=0.3):
-    if qs is None:
-        qnext = qnow + (- gradV(qnow)) * dt + np.sqrt(2 * dt / beta) * np.random.randn(*qnow.shape)
+def convert_to_serializable(obj):
+    if isinstance(obj, dict):
+        return {k: convert_to_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [convert_to_serializable(item) for item in obj]
     else:
-        qnext = qnow + (- (gradV(qnow) + gradGaussians(qnow, qs, eigenvectors, choose_eigenvalue, height, sigma, decay_sigma))) * dt + np.sqrt(
-            2 * dt / beta) * np.random.randn(*qnow.shape)
-    # print(qnow.shape, qnext.shape, np.random.randn(*qnow.shape))
-    return qnext
-
-def next_step(qnow, qs, eigenvectors, choose_eigenvalue, height, sigma, decay_sigma, dt=1e-3, beta=1.0, step_cap=0.3):
-    if qs is None:
-        step = (-gradV(qnow)) * dt + np.sqrt(2 * dt / beta) * np.random.randn(*qnow.shape)
-        step_size = np.linalg.norm(step)
-        capped_step = np.where(step_size > step_cap, step * (step_cap / step_size), step)
-        qnext = qnow + capped_step
-    else:
-        step = (- (gradV(qnow) + gradGaussians(qnow, qs, eigenvectors, choose_eigenvalue, height, sigma, decay_sigma))) * dt + np.sqrt(
-            2 * dt / beta) * np.random.randn(*qnow.shape)
-        step_size = np.linalg.norm(step)
-        capped_step = np.where(step_size > step_cap, step * (step_cap / step_size), step)
-        qnext = qnow + capped_step
-
-    return qnext
-
-def findTSTime(trajectory):
-    x_dimension = trajectory[:, 0, 0]
-    y_dimension = trajectory[:, 0, 1]
-
-    first_occurrence_index_1 = -1
-    first_occurrence_index_2 = -1
-    first_occurrence_index_3 = -1
-
-    # Find the indices where the first dimension is greater than 0
-    indices_1 = np.where(x_dimension > 0)[0]
-    # Check if any such indices exist
-    if indices_1.size > 0:
-        # Get the first occurrence
-        first_occurrence_index_1 = indices_1[0]
-        print(f"The first time step where the first dimension is greater than 0 is: {first_occurrence_index_1}")
-    else:
-        print("There are no time steps where the first dimension is greater than 0.")
-
-    # Find the indices where the second dimension is greater than 0
-    indices_2 = np.where(y_dimension < 0)[0]
-    # Check if any such indices exist
-    if indices_2.size > 0:
-        # Get the first occurrence
-        first_occurrence_index_2 = indices_2[0]
-        print(f"The first time step where the second dimension is less than 0 is: {first_occurrence_index_2}")
-    else:
-        print("There are no time steps where the second dimension is less than 0.")
-
-    # Find the indices where the second dimension is greater than 0
-    indices_3 = np.where((x_dimension > 0) & (y_dimension < 0))[0]
-    # Check if any such indices exist
-    if indices_3.size > 0:
-        # Get the first occurrence
-        first_occurrence_index_3 = indices_3[0]
-        print(f"The first time step where the first dimension is greater than zero and the second dimension is less than 0 is: {first_occurrence_index_3}")
-    else:
-        print("There are no time steps where the first dimension is greater than zero and the second dimension is less than 0.")
-
-    return first_occurrence_index_1, first_occurrence_index_2, first_occurrence_index_3
+        return json.dumps(obj.tolist())
 
 
-def run(T=100):
-    # number of extra dimensions
-    n = 0
+def run(filename=None, T=4, potential='wolfeschlegel'):
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--trial', type=int, default=0)
+    args = parser.parse_args()
 
-    xx = np.linspace(-3, 3, 200)
-    yy = np.linspace(-5, 5, 200)
-    [X, Y] = np.meshgrid(xx, yy)  # 100*100
-    W = potential(X, Y, np.zeros(n))
-    W1 = W.copy()
-    W1[W > 5] = float('nan')
-
-    fig = plt.figure()
-    ax1 = fig.add_subplot(1, 3, 1)
-    contourf_ = ax1.contourf(X, Y, W1, levels=29)
-    plt.colorbar(contourf_)
+    # # number of extra dimensions
+    # n = 8
 
     # T = 100
-    # T = 10
     dt = 1e-2
     beta = 50
     Tdeposite = 1
     height = 4.
     sigma = 0.7
+    sigma_factor = 3.
     decay_sigma = 0.7
+    reset_params = True
+    threshold = 0.003
     ic_method = 'PCA'
+    # potential = 'wolfeschlegel'
+    # potential = 'rosenbrock'
+    # random_seed = 1234
+    random_seed = None
+    if random_seed == None:
+        seed = random.randint(0, 2**32 - 1)
+    else:
+        seed = random_seed
+    rng = jax.random.PRNGKey(seed)
 
-    foldername = 'WolfeSchlegel'
+    max_qn_val = 20     # size of the relevant part of the potential surface
 
-    cmap = plt.get_cmap('plasma')
-
-
-    max_qn_val = 20
     q0 = np.concatenate((np.array([[-2.0, 2.0]]), np.array([np.random.rand(n)*(2*max_qn_val) - max_qn_val])), axis=1)
-    trajectory, qs, eigenvectors, eigenvalues, choose_eigenvalue = MD(q0, T, Tdeposite=Tdeposite, height=height, sigma=sigma, decay_sigma=decay_sigma, dt=dt, beta=beta, n=n, ic_method=ic_method)  # (steps, bs, dim)
-    
-    first_occurrence_index_1, first_occurrence_index_2, first_occurrence_index_3 = findTSTime(trajectory)
+    trajectory, qs, eigenvectors, eigenvalues, choose_eigenvalue, gradient_directions, sigma_list = MD(q0, T, Tdeposite=Tdeposite, height=height, sigma_factor=sigma_factor, sigma=sigma, decay_sigma=decay_sigma, rng=rng, pot_name=potential, dt=dt, beta=beta, n=n, threshold=threshold, reset_params=False)  # (steps, bs, dim)
 
-    savename = 'PCA_results/T{}_Tdeposite{}_dt{}_height{}_sigma{}_beta{}_ic{}'.format(T, Tdeposite, dt, height, sigma, beta, ic_method)
-    np.savez(savename, trajectory=trajectory, qs=qs, save_eigenvector=eigenvectors, save_eigenvalue=eigenvalues, choose_eigenvalue=choose_eigenvalue)
+    # TODO: add in parameter for which autoencoder to use -- to change the number of layers, the activations, whether the params are reset, etc.
+    simulation_settings = {
+        'n': n,
+        'T': T,
+        'dt': dt,
+        'beta': beta,
+        'Tdeposite': Tdeposite,
+        'height': height,
+        'sigma': sigma,
+        'sigma_factor': sigma_factor,
+        'decay_sigma': decay_sigma,
+        'threshold': threshold,
+        'reset_params': reset_params,
+        'ic_method': ic_method,
+        'potential': potential,
+        'max_qn_val': max_qn_val,
+        'random_seed': seed,
+    }
 
-    # print(trajectory)
+    with h5py.File(filename, 'w') as h5file:
+        dt = h5py.special_dtype(vlen=str)
+        h5file.create_dataset('trajectory', data=trajectory)
+        h5file.create_dataset('qs', data=qs)
+        h5file.create_dataset('eigenvectors', data=eigenvectors)
+        h5file.create_dataset('eigenvalues', data=eigenvalues)
+        h5file.create_dataset('choose_eigenvalue', data=choose_eigenvalue)
+        # h5file.create_dataset('scale_factors', data=scale_factors)
+        h5file.create_dataset('gradient_directions', data=gradient_directions)
+        h5file.create_dataset('sigma_list', data=sigma_list)
 
-    plotting = True
-    if plotting:
-        indices = np.arange(trajectory.shape[0])
-        ax1.scatter(trajectory[:, 0, 0], trajectory[:, 0, 1], c=indices, cmap=cmap)
-
-        # print(trajectory.shape, choose_eigenvalue)
-
-        # test derivative
-        print('test decay gaussians')
-        eps = 0.000001
-        print('dev', gradGaussiansDecay(q0, qs, eigenvectors, choose_eigenvalue, height, sigma, decay_sigma))
-        V0 = GaussiansDecay(q0, qs, eigenvectors, choose_eigenvalue, height, sigma, decay_sigma)
-        for i in range(2):
-            q = q0.copy()
-            q[0,i] +=  eps
-            # print(q0, q)
-            print(str(i) + ' compoenent dev: ', (GaussiansDecay(q, qs, eigenvectors, choose_eigenvalue, height, sigma, decay_sigma) - V0)/eps)
-
-
-        # test derivative
-        print('test total gaussians')
-        eps = 0.000001
-        print('dev', gradGaussians(q0, qs, eigenvectors, choose_eigenvalue, height, sigma, decay_sigma))
-        V0 = GaussiansPCA(q0, qs, eigenvectors, choose_eigenvalue, height, sigma, decay_sigma)
-        for i in range(2):
-            q = q0.copy()
-            q[0,i] +=  eps
-            # print(q0, q)
-            print(str(i) + ' compoenent dev: ', (GaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma, decay_sigma) - V0)/eps)
+        for key, value in simulation_settings.items():
+            h5file.attrs[key] = value
 
 
-        num_points = X.shape[0] * X.shape[1]
-        Gs = GaussiansPCA(np.concatenate([X.reshape(-1, 1), Y.reshape(-1, 1), np.zeros((num_points, n))], axis=1), qs, eigenvectors, choose_eigenvalue, height=height,
-                          sigma=sigma, decay_sigma=decay_sigma)
-        ax2 = fig.add_subplot(1, 3, 2)
-        Sum = Gs.reshape(200, 200)+W1
-
-        cnf2 = ax2.contourf(X, Y, Gs.reshape(200, 200), levels=29)
-        plt.colorbar(cnf2)
-        # print(eigenvectors.shape)
-        indices = np.arange(qs.shape[0])
-        ax2.scatter(qs[:, 0], qs[:, 1], c=indices, cmap=cmap)
-        ax2.quiver(qs[:, 0], qs[:, 1], eigenvectors[:, 0, 0], eigenvectors[:, 1, 0])
-        ax2.axis('equal')
-        indices = np.arange(trajectory.shape[0])
-        # ax2.scatter(trajectory[:, 0, 0], trajectory[:, 0, 1], c=indices, cmap=cmap, alpha=0.1)
-
-        # ax2.scatter(trajectory[:, 0], trajectory[:, 1], c=indices, cmap=cmap)
-        ax3 = fig.add_subplot(1, 3, 3)
-        cnf3 = ax3.contourf(X, Y, Sum, levels=29)
-
-        # fig.colorbar(contourf_)
-        plt.title(f'Local {ic_method} dynamics')
-        plt.show()
-
-    return first_occurrence_index_1, first_occurrence_index_2, first_occurrence_index_3
 
 
 if __name__ == '__main__':
-
     parser = argparse.ArgumentParser()
     parser.add_argument('--trial', type=int, default=0)
     args = parser.parse_args()
 
-    results = []
+    potential='wolfeschlegel'
 
-    run(T=5)
+    for i in range(10):
+        name = f'PCA_results/run_ws_n0_k1_{i+11}.h5'
+        run(filename=name, T=100, potential=potential)
+
+
+
+
     
-    # for _ in range(10):
-    #     i_1, i_2, i_3 = run(T=100)
-    #     results.append((i_1, i_2, i_3))
-
-    # # Print results in a way that's easy to copy and paste
-    # for result in results:
-    #     print(f"{result[0]}\t{result[1]}\t{result[2]}")
-
-
-

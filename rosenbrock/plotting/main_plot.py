@@ -445,7 +445,7 @@ if __name__ == '__main__':
 
     results = []
     for i in range(1):
-        filename = f'../results/run_test_{i+4}.h5'
+        filename = f'../results/run_test_{i+3}.h5'
         results.append(load_data(filename))
     for result in results:
         print(f'{result[0]}, {result[1]}, {result[2]}')

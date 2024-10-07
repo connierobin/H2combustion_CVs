@@ -24,7 +24,6 @@ def SumGaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma):
     V = 0.0
     for i in range(q.shape[0]): # loop over N
         x_minus_centers = q[i:i + 1] - qs_jnp  # N * M
-        print(f'x_minus_centers: {x_minus_centers}')
         x_minus_centers = jnp.expand_dims(x_minus_centers, axis=1)  # N * 1 * M
         x_projected = jnp.matmul(x_minus_centers, eigenvectors)
         x_projected_ = x_projected * choose_eigenvalue_
@@ -54,38 +53,102 @@ def JSumGaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma):
 
     return result
 
-# This function and GaussiansPCA do the same thing
-def JGaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma):
-    choose_eigenvalue_ = jnp.expand_dims(choose_eigenvalue, axis=1)
+# This function and GaussiansPCA do NOT do the same thing -- this one not updated for multiple sigmas
+def JGaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma_list):
+    # choose_eigenvalue_ = jnp.expand_dims(choose_eigenvalue, axis=1)
+    # print(f'choose_eigenvalue: {choose_eigenvalue}')
     qs_jnp = jnp.array(qs)
+
 
     def calc_exp(q_one):
         x_minus_centers = q_one - qs_jnp  # N * M
+        # print(f'x_minus_centers: {x_minus_centers}')
+        # print(f'jnp.shape(x_minus_centers): {jnp.shape(x_minus_centers)}')
         x_minus_centers = jnp.expand_dims(x_minus_centers, axis=1)  # N * 1 * M
+        # print(f'x_minus_centers: {x_minus_centers}')
         x_projected = jnp.matmul(x_minus_centers, eigenvectors)
-        x_projected_ = x_projected * choose_eigenvalue_
-        x_projected_sq_sum = jnp.sum((x_projected_) ** 2, axis=(-2, -1))  # N
-        return jnp.sum(height * jnp.exp(-jnp.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2), axis=0)
+        # print(f'x_projected: {x_projected}')
+        x_projected_ = x_projected * choose_eigenvalue
+        # print(f'x_projected_: {x_projected_}')
+        # print(f'jnp.shape(x_projected_): {jnp.shape(x_projected_)}')
+
+        # print(f'x_projected_: {x_projected_}')
+
+        # non_zero_indices = jnp.where(choose_eigenvalue != 0)[0]
+        # x_projected_filtered = x_projected_[..., non_zero_indices]
+        # print(f'x_projected_filtered: {x_projected_filtered}')
+
+        # Reshape sigma_list to match the dimensions of x_projected_filtered
+        # sigma_list_filtered = sigma_list[..., non_zero_indices]
+
+        x_projected_sq = jnp.sum((x_projected_) ** 2, axis=(1))
+        # print(f'jnp.shape(x_projected_sq): {jnp.shape(x_projected_sq)}')
+        # x_projected_sq = jnp.sum((x_projected_filtered) ** 2, axis=(1))
+        # print(f'x_projected_sq: {x_projected_sq}')
+        # print(f'2*sigma_list**2: {2*sigma_list**2}')
+        another_exponent = - x_projected_sq / 2 / (sigma_list ** 2)
+        # print(f'another_exponent: {another_exponent}')
+        # print(f'jnp.shape(another_exponent): {jnp.shape(another_exponent)}')
+        # return jnp.sum(height * jnp.exp(another_exponent) * choose_eigenvalue, axis=0)
+        # result = jnp.sum(height * jnp.exp(another_exponent), axis=0)
+        # print(f'jnp.shape(result): {jnp.shape(result)}')
+        # padded_result = jnp.pad(result, (0, len(choose_eigenvalue) - result.shape[0]), constant_values=0)
+        # print(f'jnp.shape(padded_result): {jnp.shape(padded_result)}')
+        # return padded_result
+
+        return height * jnp.exp(jnp.sum(another_exponent, axis=-1))
+
+        # return jnp.sum(height * jnp.exp(another_exponent), axis=0)
+
+
+        # x_projected_sq_sum = jnp.sum((x_projected_) ** 2, axis=(-2, -1))  # N
+        # exponent = -jnp.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma_list ** 2
+        # print(f'exponent: {exponent}')
+        # result = jnp.exp(exponent) * choose_eigenvalue
+        # print(f'result: {result}')
+        # # return jnp.sum(height * jnp.exp(-jnp.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma_list ** 2) * choose_eigenvalue, axis=0)
+        # return jnp.sum(height * jnp.exp(-jnp.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma_list ** 2), axis=0)
 
     vmap_calc_exp = vmap(calc_exp, in_axes=(0))
     result = vmap_calc_exp(q)
 
     return result
 
-def GaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma):
-    choose_eigenvalue_ = np.expand_dims(choose_eigenvalue, axis=1)
+# This function is used for taking derivatives with jax
+def GaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma_list):
+    choose_eigenvalue_ = jnp.expand_dims(choose_eigenvalue, axis=1)
 
-    V = np.empty((q.shape[0], 1))
+    # The second dimension...depends on how many eigenvectors are being chosen
+    V = np.empty((q.shape[0], 2))
     for i in range(q.shape[0]):
         x_minus_centers = q[i:i + 1] - qs  # N * M
-        x_minus_centers = np.expand_dims(x_minus_centers, axis=1)  # N * 1 * M
-        x_projected = np.matmul(x_minus_centers, eigenvectors)
+        x_minus_centers = jnp.expand_dims(x_minus_centers, axis=1)  # N * 1 * M
+        x_projected = jnp.matmul(x_minus_centers, eigenvectors)
         x_projected_ = x_projected * choose_eigenvalue_
-        x_projected_sq_sum = np.sum((x_projected_) ** 2, axis=(-2, -1))  # N
-
-        V[i] = np.sum(height * np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2), axis=0)
+        x_projected_sq = jnp.sum((x_projected_) ** 2, axis=(1))
+        another_exponent = jnp.sum(- x_projected_sq / 2 / sigma_list ** 2, axis=-1)
+        V[i] = jnp.sum(height * jnp.exp(another_exponent), axis=0)
 
     return V
+
+
+# OLD
+# def GaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma):
+#     choose_eigenvalue_ = np.expand_dims(choose_eigenvalue, axis=1)
+
+#     V = np.empty((q.shape[0], 1))
+#     for i in range(q.shape[0]):
+#         x_minus_centers = q[i:i + 1] - qs  # N * M
+#         x_minus_centers = np.expand_dims(x_minus_centers, axis=1)  # N * 1 * M
+#         x_projected = np.matmul(x_minus_centers, eigenvectors)
+#         x_projected_ = x_projected * choose_eigenvalue_
+#         x_projected_sq_sum = np.sum((x_projected_) ** 2, axis=(-2, -1))  # N
+
+#         V[i] = np.sum(height * np.exp(-np.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma ** 2), axis=0)
+
+#     return V
+
+
 
 jax_PCASumGaussian = jax.grad(SumGaussiansPCA)
 jax_PCASumGaussian_jit = jax.jit(jax_PCASumGaussian)
@@ -127,10 +190,11 @@ def main_plot(potential, potential_name, n, trajectory, qs, eigenvectors_list, c
     W1 = W.copy()
     W1 = W1.at[W > 300].set(float('nan'))  # Use JAX .at[] method
 
-    fig = plt.figure(figsize=(14,6))
+    # fig = plt.figure(figsize=(14,6))
+    fig = plt.figure(figsize=(10.5,4.5))
     ax1 = fig.add_subplot(1, 3, 1)
     contourf_ = ax1.contourf(X, Y, W1, levels=29)
-    # plt.colorbar(contourf_)
+    plt.colorbar(contourf_)
 
     indices = np.arange(trajectory.shape[0])
     ax1.scatter(trajectory[:, 0, 0], trajectory[:, 0, 1], c=indices, cmap=cmap)
@@ -172,9 +236,11 @@ def main_plot(potential, potential_name, n, trajectory, qs, eigenvectors_list, c
     # print(f'result3: {result3}')
 
     # Gaussian values not summed over time steps:
-    for i, (center, eigenvectors, choose_eigenvalue) in enumerate(zip(qs, eigenvectors_list, choose_eigenvalue_list)):
-        result = JGaussiansPCA(points, jnp.array([center]), eigenvectors, choose_eigenvalue, height=height, sigma=sigma)
+    for i, (center, eigenvectors, choose_eigenvalue, sigmas) in enumerate(zip(qs, eigenvectors_list, choose_eigenvalue_list, sigma_list)):
+        # print(f'i = {i}, center = {center}')
+        result = JGaussiansPCA(points, jnp.array([center]), eigenvectors, choose_eigenvalue, height=height, sigma_list=np.array([sigmas]))
         results.append(result)
+    # print(f'results: {results}')
     results = jnp.array(results)
     # print(f'results.shape: {results.shape}')
     results = jnp.sum(results, axis=-1)         # TODO: check if this is correct
@@ -184,7 +250,7 @@ def main_plot(potential, potential_name, n, trajectory, qs, eigenvectors_list, c
 
     ax2 = fig.add_subplot(1, 3, 2)
     cnf2 = ax2.contourf(X, Y, Gs.reshape(X.shape[0], X.shape[1]), levels=29)
-    # plt.colorbar(cnf2)
+    plt.colorbar(cnf2)
     indices = np.arange(qs.shape[0])
     ax2.scatter(qs[:, 0], qs[:, 1], c=indices, cmap=cmap)
     ax2.set(xlim=(-3, 3), ylim=(-3, 3))
@@ -200,6 +266,8 @@ def main_plot(potential, potential_name, n, trajectory, qs, eigenvectors_list, c
     cnf3 = ax3.contourf(X, Y, Sum, levels=29)
 
     ax3.set(xlim=(-3, 3), ylim=(-3, 3))
+
+    plt.subplots_adjust(wspace=0.25)
 
     # fig.colorbar(contourf_)
     plt.title('Biased Potential')
@@ -222,22 +290,22 @@ def main_plot(potential, potential_name, n, trajectory, qs, eigenvectors_list, c
 
     num_points = X.shape[0] * X.shape[1]
 
-    # Initialize an empty list to store the results
-    results = []
+    # # Initialize an empty list to store the results
+    # results = []
 
     # Gs = JSumGaussian(jnp.concatenate([X.reshape(-1, 1), Y.reshape(-1, 1), jnp.zeros((num_points, n))], axis=1), qs, encoder_params_list, scale_factors, h=height, sigma=sigma)
     points = jnp.concatenate([X.reshape(-1, 1), Y.reshape(-1, 1), jnp.zeros((num_points, n))], axis=1)
 
     # Gaussian values not summed over time steps:
-    for i, (center, eigenvectors, choose_eigenvalue) in enumerate(zip(qs, eigenvectors_list, choose_eigenvalue_list)):
-        result = JGaussiansPCA(points, jnp.array([center]), eigenvectors, choose_eigenvalue, height=height, sigma=sigma)
-        results.append(result)
-    results = jnp.array(results)
+    # for i, (center, eigenvectors, choose_eigenvalue) in enumerate(zip(qs, eigenvectors_list, choose_eigenvalue_list)):
+    #     result = GaussiansPCA(points, jnp.array([center]), eigenvectors, choose_eigenvalue, height=height, sigma=sigma)
+    #     results.append(result)
+    # results = jnp.array(results)
     # print(f'results.shape: {results.shape}')
-    results = jnp.sum(results, axis=-1)         # TODO: check if this is correct
-    Gs = jnp.sum(results, axis=0)
-    Gs = Gs.reshape(X.shape)
-    Sum = Gs + W1
+    # results = jnp.sum(results, axis=-1)         # TODO: check if this is correct
+    # Gs = jnp.sum(results, axis=0)
+    # Gs = Gs.reshape(X.shape)
+    # Sum = Gs + W1
 
     ax1.set(xlim=(-3, 3), ylim=(-3, 3))
     plt.show()
@@ -307,6 +375,7 @@ def main_plot(potential, potential_name, n, trajectory, qs, eigenvectors_list, c
     reshaped_trajectory = trajectory[:-1].reshape(T, NstepsDeposite, 1, 2 + n)  # Assuming 10 iterations and calculating steps
     # Plot the individual Gaussians
     for i in range(len(results)):
+        # print(qs[i])
         fig_gaussian, ax_gaussian = plt.subplots()
         ax_gaussian.contourf(X, Y, W1, levels=29)
         cnf = ax_gaussian.contourf(X, Y, results[i].reshape(X.shape[0], X.shape[1]), levels=29)
@@ -336,7 +405,7 @@ def findTSTime(trajectory):
     first_occurrence_index_3 = -1
 
     # Upper Right Quadrant
-    indices_1 = np.where((x_dimension > 0.1) & (y_dimension > 0.1))[0]
+    indices_1 = np.where((x_dimension > 0.2) & (y_dimension > 0.2))[0]
     # Check if any such indices exist
     if indices_1.size > 0:
         # Get the first occurrence
@@ -346,7 +415,7 @@ def findTSTime(trajectory):
         print("There are no time steps in the UPPER RIGHT well.")
 
     # Lower Left Quadrant
-    indices_2 = np.where((x_dimension < -0.1) & (y_dimension < -0.1))[0]
+    indices_2 = np.where((x_dimension < -0.2) & (y_dimension < -0.2))[0]
     # Check if any such indices exist
     if indices_2.size > 0:
         # Get the first occurrence
@@ -356,7 +425,7 @@ def findTSTime(trajectory):
         print("There are no time steps in the LOWER LEFT well.")
 
     # Lower Right Quadrant
-    indices_3 = np.where((x_dimension > 0.1) & (y_dimension < -0.1))[0]
+    indices_3 = np.where((x_dimension > 0.2) & (y_dimension < -0.2))[0]
     # Check if any such indices exist
     if indices_3.size > 0:
         # Get the first occurrence
@@ -404,7 +473,7 @@ def load_data(filename):
         # Simulation parameters
         parameters = {key: h5file.attrs[key] for key in h5file.attrs}
 
-        print(parameters)
+        # print(parameters)
     
     pot_fn = None
     if parameters['potential'] == 'wolfeschlegel':
@@ -429,7 +498,9 @@ if __name__ == '__main__':
 
     results = []
     for i in range(10):
-        filename = f'../PCA_results/run_ws_n0_k1_{i+12}.h5'
+        # filename = f'../PCA_results/run_ws_n3_{i+6}.h5'
+        # filename = f'../PCA_results/run_ws_n0_k1_{i+6}.h5'
+        filename = f'../PCA_results/run_ws_n0_k1_{i+3}.h5'
         results.append(load_data(filename))
     for result in results:
         print(f'{result[0]}, {result[1]}, {result[2]}')

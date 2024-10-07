@@ -20,7 +20,7 @@ import random
 import time
 
 # Global dimensionality of the system
-n = 0
+n = 1
 
 def potential(qx, qy, qn, pot_name):
     if pot_name == 'rosenbrock':
@@ -82,6 +82,8 @@ def PCA(data):  # datasize: N * dim
     sorted_indices = np.argsort(eigenvalues)[::-1]
     eigenvalues = eigenvalues[sorted_indices]
     eigenvectors = eigenvectors[:, sorted_indices]
+
+    # print(eigenvalues)
 
     # Step 4.6: Choose the number of components (optional)
     # k = 1  # Set the desired number of components
@@ -145,12 +147,27 @@ def SumGaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma_list):
         x_minus_centers = q[i:i + 1] - qs  # N * M
         x_minus_centers = jnp.expand_dims(x_minus_centers, axis=1)  # N * 1 * M
         x_projected = jnp.matmul(x_minus_centers, eigenvectors)
+        # print(f'x_projected: {x_projected}')
         x_projected_ = x_projected * choose_eigenvalue_
+        # print(f'x_projected_: {x_projected_}')
         x_projected_sq_sum = jnp.sum((x_projected_) ** 2, axis=(-2, -1))  # N
+        # print(f'x_projected_sq_sum: {x_projected_sq_sum}')
 
         x_projected_sq = jnp.sum((x_projected_) ** 2, axis=(1))
+        # print(f'x_projected_sq: {x_projected_sq}')
         another_exponent = - x_projected_sq / 2 / sigma_list ** 2
-        V += jnp.sum(height * jnp.exp(another_exponent), axis=0)
+
+        # x_projected_2 = x_projected_.at[:,:,0]
+        # x_projected_sq_sum_2 = jnp.sum((x_projected_2) ** 2, axis=(-2, -1))  # N
+
+        # print(f'exponential 1: {jnp.sum(height * jnp.exp(another_exponent), axis=0)}')
+        # print(f'exponential 1.5: {height * jnp.exp(jnp.sum(another_exponent, axis=-1))}')
+        # print(f'V: {V}')
+        # print(f'exponential 2: {jnp.sum(height * jnp.exp(another_exponent) * choose_eigenvalue, axis=0)}')
+        # print(f'exponential 3: {jnp.sum(height * jnp.exp(-jnp.expand_dims(x_projected_sq_sum, axis=1) / 2 / sigma_list[0] ** 2), axis=0)}')
+        # V += jnp.sum(height * jnp.exp(another_exponent), axis=0)
+        V += jnp.sum(height * jnp.exp(jnp.sum(another_exponent, axis=-1)))
+        # print(f'V: {V}')
 
     return V
 
@@ -252,6 +269,7 @@ def next_step(qnow, qs, eigenvectors, choose_eigenvalue, height, sigma_list, pot
         #     print(qnow, q)
         #     print(str(i) + ' compoenent dev: ', (GaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma) - V0)/eps)
         #     print(f'Sum of above: {np.sum((GaussiansPCA(q, qs, eigenvectors, choose_eigenvalue, height, sigma) - V0)/eps)}')
+        # print(f'SumGaussians: {SumGaussiansPCA(qnow, qs, eigenvectors, choose_eigenvalue, height, np.array(sigma_list))}')
 
 
         step = (- (gradV(qnow, pot_name) + PCAGradGaussians(qnow, qs, eigenvectors, choose_eigenvalue, height, sigma_list))) * dt
@@ -294,7 +312,7 @@ def MD(q0, T, Tdeposite, height, sigma, sigma_factor, rng, decay_sigma, pot_name
     Ncenter = int(NstepsDeposite / 2)
     trajectories = np.zeros((Nsteps + 1, q0.shape[0], q0.shape[1]))
 
-    variance = 0.01  # Threshhold for choosing number of eigenvectors in PCA
+    variance = 0.7  # Threshhold for choosing number of eigenvectors in PCA
     q = q0
     qs = None
 
@@ -325,6 +343,7 @@ def MD(q0, T, Tdeposite, height, sigma, sigma_factor, rng, decay_sigma, pot_name
                 selected_eigenvectors, eigenvalues, transformed_data = PCA(data)
 
                 qs = mean_vector                #data[-2:-1]#mean_vector
+                # print(f'mean_vector: {mean_vector}')
                 # qs = center_vector
                 eigenvectors = np.expand_dims(selected_eigenvectors, axis=0)
                 save_eigenvalues = np.expand_dims(eigenvalues, axis=0)
@@ -339,10 +358,13 @@ def MD(q0, T, Tdeposite, height, sigma, sigma_factor, rng, decay_sigma, pot_name
                     choose_eigenvalue_tmp[0, s] = 1
                 choose_eigenvalue = choose_eigenvalue_tmp
 
+                # print(choose_eigenvalue)
+
                 # TODO: put this back in later
                 # sigma = max(jnp.std(encoded_values, axis=0)) * sigma_factor
                 # sigmas = jnp.std(encoded_values, axis=0) * sigma_factor
                 sigmas = jnp.std(transformed_data, axis=0) * sigma_factor
+                print(f'sigmas: {sigmas}')
 
                 # sigma_list.append(sigma)
                 sigma_list.append(sigmas)
@@ -374,6 +396,8 @@ def MD(q0, T, Tdeposite, height, sigma, sigma_factor, rng, decay_sigma, pot_name
                 for s in range(idx + 1):
                     choose_eigenvalue_tmp[0, s] = 1
                 choose_eigenvalue = np.concatenate([choose_eigenvalue, choose_eigenvalue_tmp], axis=0)
+
+                # print(choose_eigenvalue)
 
                 # TODO: put these back later
                 # sigma = max(jnp.std(encoded_values, axis=0)) * sigma_factor
@@ -482,7 +506,7 @@ if __name__ == '__main__':
     potential='wolfeschlegel'
 
     for i in range(10):
-        name = f'PCA_results/run_ws_n0_k1_{i+11}.h5'
+        name = f'PCA_results/run_ws_n1_{i+20}.h5'
         run(filename=name, T=100, potential=potential)
 
 

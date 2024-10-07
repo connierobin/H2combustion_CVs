@@ -61,10 +61,45 @@ def grad_wolfeschlegel(q):
     grad = jnp.concatenate((Vx, Vy, Vn), axis=1)
     return grad
 
+def rosenbrock_well(qx, qy, qn):
+    V = 100 * (qy - qx**2)**2 + (1 - qx)**2 + qy**2 + 100 * jnp.sum(qn**2)
+    return V
+
+def grad_rosenbrock_well(q):
+    qx = q[:, 0:1]
+    qy = q[:, 1:2]
+    qn = q[:, 2:]
+    Vx = -400 * qx * (qy - qx**2) - 2 * (1 - qx**2)
+    Vy = 200 * (qy - qx**2) + 2 * qy
+    Vn = 100 * 2*qn
+    grad = jnp.concatenate((Vx, Vy, Vn), axis=1)
+    return grad
+
+def rosenbrock(qx, qy, qn):
+    V = 100 * (qy - qx**2)**2 + (1 - qx)**2 + 100 * jnp.sum(qn**2)
+    return V
+
+def grad_rosenbrock(q):
+    qx = q[:, 0:1]
+    qy = q[:, 1:2]
+    qn = q[:, 2:]
+    Vx = -400 * qx * (qy - qx**2) - 2 * (1 - qx**2)
+    Vy = 200 * (qy - qx**2)
+    Vn = 100 * 2*qn
+    grad = jnp.concatenate((Vx, Vy, Vn), axis=1)
+    return grad
+
 def gradV(q, potential):
-    if potential == 'triplewell':
+    print(potential)
+    if potential == 'wolfeschlegel':
+        return grad_wolfeschlegel(q)
+    elif potential == 'triplewell':
         return grad_triple_well(q)
-    return grad_wolfeschlegel(q)
+    elif potential == 'rosenbrock':
+        return grad_rosenbrock(q)
+    # elif potential == 'rosenbrock_well':
+    #     return grad_rosenbrock_well(q)
+    return grad_rosenbrock_well(q)
 
 # Define the autoencoder
 def autoencoder_fn(x, is_training=False):
@@ -380,7 +415,7 @@ def GradAtCenter(centers, encoder_params_list, scale_factors, h, sigma_list, dec
 #     return vmap_grad_center(centers, encoder_params_list, scale_factors)
 
 
-def MD(q0, T, Tdeposite, height, sigma_factor, rng, decay_sigma, dt=1e-3, beta=1.0, n=0, threshold=-1., reset_params=False):
+def MD(q0, T, Tdeposite, height, sigma_factor, rng, decay_sigma, dt=1e-3, beta=1.0, n=0, threshold=-1., reset_params=False, potential=None):
     Nsteps = int(T / dt)
     NstepsDeposite = int(Tdeposite / dt)
     Ncenter = int(NstepsDeposite / 2)
@@ -409,7 +444,7 @@ def MD(q0, T, Tdeposite, height, sigma_factor, rng, decay_sigma, dt=1e-3, beta=1
     for i in tqdm(range(Nsteps)):
 
         trajectories[i, :] = q
-        q = next_step(q, qs, encoder_params_list, scale_factors, height, sigma_list, decay_sigma, dt, beta)
+        q = next_step(q, qs, encoder_params_list, scale_factors, height, sigma_list, decay_sigma, dt, beta, potential=potential)
 
         if (i + 1) % NstepsDeposite == 0:
 
@@ -492,7 +527,7 @@ def run(filename=None, T=4):
     reset_params = True
     threshold = 0.003
     ic_method = 'AE'
-    potential = 'wolfeschlegel'
+    potential = 'rosenbrock_well'
     # random_seed = 1234
     random_seed = None
     if random_seed == None:
@@ -504,7 +539,7 @@ def run(filename=None, T=4):
     max_qn_val = 20     # size of the relevant part of the potential surface
 
     q0 = np.concatenate((np.array([[-2.0, 2.0]]), np.array([np.random.rand(n)*(2*max_qn_val) - max_qn_val])), axis=1)
-    trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, epochs_list = MD(q0, T, Tdeposite=Tdeposite, height=height, sigma_factor=sigma_factor, decay_sigma=decay_sigma, rng=rng, dt=dt, beta=beta, n=n, threshold=threshold, reset_params=False)  # (steps, bs, dim)
+    trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, epochs_list = MD(q0, T, Tdeposite=Tdeposite, height=height, sigma_factor=sigma_factor, decay_sigma=decay_sigma, rng=rng, dt=dt, beta=beta, n=n, threshold=threshold, reset_params=False, potential=potential)  # (steps, bs, dim)
     
     # TODO: add in parameter for which autoencoder to use -- to change the number of layers, the activations, whether the params are reset, etc.
     simulation_settings = {
@@ -549,8 +584,8 @@ if __name__ == '__main__':
     parser.add_argument('--trial', type=int, default=0)
     args = parser.parse_args()
 
-    for i in range(7):
-        name = f'results/run_ws_n0_k1_{i+4}.h5'
+    for i in range(2):
+        name = f'results/run_roswell_n0_{i+2}.h5'
         run(filename=name, T=100)
 
 

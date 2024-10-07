@@ -18,7 +18,7 @@ import re
 def autoencoder_fn(x, is_training=False):
     input_dim = x.shape[-1]
     intermediate_dim = 64
-    encoding_dim = 1
+    encoding_dim = 2
 
     x = hk.Linear(intermediate_dim)(x)
     x = jax.nn.leaky_relu(x)
@@ -144,6 +144,14 @@ def wolfeschlegel_potential(qx, qy, qn):
     V = 10 * (qx**4 + qy**4 - 2 * qx**2 - 4 * qy**2 + qx * qy + 0.2 * qx + 0.1 * qy + jnp.sum(qn**2))
     return V
 
+def rosenbrock(qx, qy, qn):
+    V = 100 * (qy - qx**2)**2 + (1 - qx)**2 + 100 * jnp.sum(qn**2)
+    return V
+
+def rosenbrock_well(qx, qy, qn):
+    V = 100 * (qy - qx**2)**2 + (1 - qx)**2 + qy**2 + 100 * jnp.sum(qn**2)
+    return V
+
 def main_plot(potential, potential_name, n, trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, epochs_list, decay_sigma, height, NstepsDeposite, T, threshold, timings):
     filename = None
 
@@ -156,7 +164,8 @@ def main_plot(potential, potential_name, n, trajectory, qs, encoder_params_list,
     W1 = W.copy()
     W1 = W1.at[W > 300].set(float('nan'))  # Use JAX .at[] method
 
-    fig = plt.figure(figsize=(14,6))
+    # fig = plt.figure(figsize=(14,6))
+    fig = plt.figure(figsize=(10.5,4.5))
     ax1 = fig.add_subplot(1, 3, 1)
     contourf_ = ax1.contourf(X, Y, W1, levels=29)
     plt.colorbar(contourf_)
@@ -201,6 +210,8 @@ def main_plot(potential, potential_name, n, trajectory, qs, encoder_params_list,
     ax3 = fig.add_subplot(1, 3, 3)
     cnf3 = ax3.contourf(X, Y, Sum, levels=29)
     ax3.set(xlim=(-3, 3), ylim=(-3, 3))
+
+    plt.subplots_adjust(wspace=0.25)
 
     # fig.colorbar(contourf_)
     plt.title('Biased Potential')
@@ -446,7 +457,9 @@ def load_data(filename):
     if parameters['potential'] == 'wolfeschlegel':
         pot_fn = wolfeschlegel_potential
     if parameters['potential'] == 'rosenbrock':
-        pot_fn = rosenbrock_potential
+        pot_fn = rosenbrock
+    if parameters['potential'] == 'rosenbrock_well':
+        pot_fn = rosenbrock_well
     
     Tdeposite = parameters['Tdeposite']
     dt = parameters['dt']
@@ -454,7 +467,7 @@ def load_data(filename):
 
     timings = findTSTime(trajectory)
 
-    # main_plot(pot_fn, parameters['potential'], parameters['n'], trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, epochs_list, parameters['decay_sigma'], parameters['height'], NstepsDeposite, parameters['T'], parameters['threshold'], timings)
+    main_plot(pot_fn, parameters['potential'], parameters['n'], trajectory, qs, encoder_params_list, scale_factors, gradient_directions, encoded_values_list, decoded_values_list, sigma_list, epochs_list, parameters['decay_sigma'], parameters['height'], NstepsDeposite, parameters['T'], parameters['threshold'], timings)
 
     return timings
 
@@ -465,7 +478,7 @@ if __name__ == '__main__':
 
     results = []
     for i in range(10):
-        filename = f'../results/run_ws_n0_k1_{i+1}.h5'
+        filename = f'../results/run_n1resetparam_{i+6}.h5'
         results.append(load_data(filename))
     for result in results:
         print(f'{result[0]}, {result[1]}, {result[2]}')
